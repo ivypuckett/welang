@@ -1,0 +1,2 @@
+# welang
+Functional Rust alternative
