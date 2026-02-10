@@ -1,0 +1,12 @@
+[package]
+name = "welang"
+version = "0.1.0"
+edition = "2024"
+description = "A functional programming language that compiles to LLVM"
+
+[dependencies]
+inkwell = { version = "0.5", features = ["llvm18-0"] }
+thiserror = "2"
+
+[dev-dependencies]
+pretty_assertions = "1"
