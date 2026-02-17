@@ -1,43 +1,65 @@
 # welang
 
-A functional programming language implemented in Rust that compiles to LLVM IR.
+A functional programming language implemented in Swift that compiles to LLVM IR.
 
 ## Project Structure
 
 ```
-src/
-├── main.rs      # CLI entry point and top-level compilation pipeline
-├── lexer.rs     # Tokenizer: source text → token stream
-├── parser.rs    # Parser: token stream → AST
-├── ast.rs       # Abstract syntax tree type definitions
-├── codegen.rs   # LLVM IR generation via inkwell (LLVM 18 bindings)
-└── errors.rs    # Error types (LexError, ParseError, CodegenError, Span)
+Sources/
+├── CLLLVM/
+│   └── include/
+│       ├── module.modulemap   # C module map for LLVM-C API
+│       └── shim.h             # Umbrella header importing LLVM-C headers
+├── WeLangLib/
+│   ├── Compile.swift          # Top-level compilation pipeline
+│   ├── Lexer.swift            # Tokenizer: source text → token stream
+│   ├── Parser.swift           # Parser: token stream → AST
+│   ├── AST.swift              # Abstract syntax tree type definitions
+│   ├── Codegen.swift          # LLVM IR generation via LLVM-C API
+│   └── Errors.swift           # Error types (LexError, ParseError, CodegenError, Span)
+└── WeLang/
+    └── main.swift             # CLI entry point
+
+Tests/
+└── WeLangTests/
+    ├── ErrorsTests.swift      # Error type and Span tests
+    ├── LexerTests.swift       # Tokenizer tests
+    ├── ParserTests.swift      # Parser tests
+    ├── ASTTests.swift         # AST type tests
+    ├── CodegenTests.swift     # LLVM code generation tests
+    └── CompileTests.swift     # End-to-end compilation tests
 ```
 
 ## Compilation Pipeline
 
 ```
-source text → lexer::lex → parser::parse → codegen::generate → LLVM IR
+source text → lex() → parse() → generate() → LLVM IR
 ```
 
-Each phase returns a `Result` with a phase-specific error type. All errors
-convert into `CompileError` via `From` impls (derived by `thiserror`).
+Each phase throws a phase-specific error type. The top-level `compile()`
+function in `Compile.swift` orchestrates the pipeline and propagates errors
+as `CompileError`.
 
 ## Build & Run
 
 ```sh
-cargo build
-cargo run -- <source-file.we>
+swift build
+swift run welang <source-file.we>
 ```
 
 ## Dependencies
 
-- **inkwell** (`0.5`, feature `llvm18-0`) — safe Rust bindings to the LLVM C API.
-- **thiserror** (`2`) — derive macros for `std::error::Error`.
-- **pretty_assertions** (dev, `1`) — readable diffs in test failures.
+- **CLLLVM** (system library) — C module map bridging to the LLVM-C API.
+- **LLVM 18** must be installed on the system with development headers.
 
-LLVM 18 must be installed on the system (`llvm-config` must be on `$PATH` or
-`LLVM_SYS_180_PREFIX` must be set).
+### Installing LLVM 18 (Ubuntu)
+
+```sh
+sudo apt install llvm-18-dev
+```
+
+Ensure `llvm-config-18` (or `llvm-config`) is on `$PATH`, or set the
+`PKG_CONFIG_PATH` to include the LLVM 18 pkgconfig directory.
 
 ## Testing — IMPORTANT
 
@@ -48,20 +70,21 @@ most important development rule for welang.
 
 ```sh
 # Run the full test suite
-cargo test
+swift test
 
-# Run tests for a single module
-cargo test --lib lexer
-cargo test --lib parser
-cargo test --lib ast
-cargo test --lib codegen
-cargo test --lib errors
+# Run tests for a single test class
+swift test --filter ErrorsTests
+swift test --filter LexerTests
+swift test --filter ParserTests
+swift test --filter ASTTests
+swift test --filter CodegenTests
+swift test --filter CompileTests
 
 # Run a single test by name
-cargo test lex_empty_source_returns_eof
+swift test --filter testLexEmptySourceReturnsEof
 
-# Run tests with output shown (useful for debugging)
-cargo test -- --nocapture
+# Run tests with verbose output
+swift test --verbose
 ```
 
 ### Testing Guidelines
@@ -75,35 +98,31 @@ cargo test -- --nocapture
    run the full pipeline unless you are specifically testing end-to-end
    behavior.
 
-3. **Use `pretty_assertions`** for any equality checks on complex types
-   (AST nodes, token lists) so failures are easy to diagnose:
-   ```rust
-   use pretty_assertions::assert_eq;
-   ```
+3. **Name tests descriptively.** Use the pattern
+   `test<FunctionUnderTest><Scenario>` — for example
+   `testLexStringLiteralWithEscape`, `testParseMissingSemicolonError`.
 
-4. **Name tests descriptively.** Use the pattern
-   `<function_under_test>_<scenario>` — for example
-   `lex_string_literal_with_escape`, `parse_missing_semicolon_error`.
+4. **Keep tests organized by module.** Each source file has a corresponding
+   test file in `Tests/WeLangTests/`.
 
-5. **Keep tests close to the code.** Tests live in a `#[cfg(test)] mod tests`
-   block at the bottom of each module file, not in a separate `tests/`
-   directory (integration tests may be added later for end-to-end checks).
-
-6. **Test error cases explicitly.** Ensure that invalid input produces the
+5. **Test error cases explicitly.** Ensure that invalid input produces the
    correct error variant and a useful message. Example:
-   ```rust
-   #[test]
-   fn lex_unexpected_character() {
-       let err = lex("@").unwrap_err();
-       assert!(matches!(err, LexError::UnexpectedCharacter { ch: '@', pos: 0 }));
+   ```swift
+   func testLexUnexpectedCharacter() throws {
+       XCTAssertThrowsError(try lex("@")) { error in
+           guard case LexError.unexpectedCharacter(ch: "@", pos: 0) = error else {
+               XCTFail("Unexpected error: \(error)")
+               return
+           }
+       }
    }
    ```
 
-7. **Do not skip codegen tests.** The LLVM integration tests (in
-   `codegen.rs`) verify that inkwell/LLVM are linked correctly. If they
+6. **Do not skip codegen tests.** The LLVM integration tests (in
+   `CodegenTests.swift`) verify that LLVM is linked correctly. If they
    fail, the LLVM installation is broken — fix it rather than ignoring it.
 
-8. **Run `cargo test` before every commit.** All tests must pass. Do not
+7. **Run `swift test` before every commit.** All tests must pass. Do not
    merge or push code with failing tests.
 
 ### What to Test When Adding a Language Feature
@@ -115,12 +134,14 @@ phases:
 |---------|-------------------------------------------------------|
 | Lexer   | New token types are recognized; edge cases; errors    |
 | Parser  | AST nodes are built correctly; precedence; errors     |
-| AST     | Equality, cloning, debug output of new node types     |
+| AST     | Equality of new node types                            |
 | Codegen | Correct LLVM IR is emitted; round-trip via JIT if possible |
-| main    | End-to-end: source string → successful compilation    |
+| Compile | End-to-end: source string → successful compilation    |
 
 ## Code Style
 
-- Run `cargo clippy` and fix all warnings before committing.
-- Run `cargo fmt` to ensure consistent formatting.
-- Prefer returning `Result` over panicking. Reserve `unwrap()` for tests.
+- Follow Swift API Design Guidelines.
+- Use `throws` for fallible functions instead of force-unwrapping. Reserve
+  `try!` and force-unwraps for tests only.
+- Mark types and functions `public` in `WeLangLib` so they are accessible
+  from both the executable target and the test target.
