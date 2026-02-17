@@ -19,8 +19,8 @@ map: (f | x | applyToEach f x)
 # Naturally polymorphic — works for any type
 identity: x
 
-# Explicit type constraint
-intId: *i64 x
+# Explicit type constraint (type annotation goes BEFORE the colon)
+intId *i64: x
 
 # Function passed as argument
 doubled: (map double [1, 2, 3])
@@ -30,7 +30,12 @@ transform: (| double | increment)
 
 # Function type in alias
 Transformer: '(i64|i64)
-myTransform: Transformer (| double)
+
+# Lambda with named parameter for clarity in closures
+nested: (something (it: do it) x)
+
+# Nested lambdas for multi-arg curried functions
+add3: (a: (b: (c: addAll a b c)))
 ```
 
 ## Background
@@ -97,47 +102,46 @@ The type inference engine supports:
 
 ## AST Additions
 
-### Explicit Type Annotation on Definitions
+### Definition-Level Type Annotations (Recap)
 
-Allow definitions to have an optional type annotation:
+Phase 2 introduced the `Definition` struct with an optional `typeAnnotation` field. The type annotation sits **between the label and the colon**:
 
 ```swift
 public struct Definition: Equatable {
     public let label: String
-    public let typeAnnotation: Expr?  // NEW: optional type annotation (e.g., *i64)
+    public let typeAnnotation: Expr?  // type between label and colon
     public let value: Expr
     public let span: Span
 }
 ```
 
-This supports syntax like:
+```we
+# Type-annotated definitions — type is BEFORE the colon
+intId *i64: x
+point *{x: f64, y: f64}: {x: 0.0, y: 0.0}
+
+# Untyped definition — no type between label and colon
+identity: x
+```
+
+Phase 6 extended the parser to handle full type expressions (`*`, `'`, compound types) in the annotation position. This phase ensures the type checker validates annotations against inferred types using Algorithm W's unification.
+
+### Function Expressions and Lambdas
+
+welang has two ways to create functions:
+
+1. **Implicit functions**: any expression that references `x` is a function. `identity: x` has type `∀α. α → α`.
+2. **Lambdas with named parameters** (from Phase 3): `(name: body)` creates an anonymous function where the parameter is named `name` instead of `x`. This is essential for closures:
 
 ```we
-# Type-annotated definition
-intId: *i64 x
+# Lambda with named parameter — renames x to "it"
+nested: (something (it: do it) x)
 
-# The parser sees: label "intId", colon, then the value expression
-# The value is: *i64 applied to x? Or is *i64 a type annotation on x?
+# Nested lambdas for multi-arg curried functions
+add3: (a: (b: (c: addAll a b c)))
 ```
 
-**Parsing strategy**: When parsing a definition's value, if the first expression is a type annotation (`*` or `'` prefixed), and it is followed by another expression, treat the type annotation as the definition's type and the rest as the value:
-
-```
-Definition = Label ":" TypeAnnotation? Expr
-TypeAnnotation = ("*" | "'") TypeExpr
-```
-
-If a type annotation is present, store it in `Definition.typeAnnotation`. The type checker validates that the value conforms to the annotation.
-
-### Function Expressions
-
-Currently, a function is implicitly any expression that references `x`. To make higher-order patterns explicit, we may want a way to create anonymous functions (lambdas). In welang, the approach is:
-
-- A definition whose value is an S-expression or pipe that references `x` is a function.
-- Functions are first-class values — they can be passed and returned.
-- The `(| f | g)` pattern with a leading pipe creates a function: it takes `x` as input and pipes through `f` then `g`.
-
-No new AST nodes are needed for lambdas — the leading pipe `(| ...)` already serves this purpose.
+Both forms create function values. The leading pipe `(| f | g)` also creates a function (takes `x` as input and pipes through `f` then `g`).
 
 ## Type Inference Extensions
 
@@ -159,7 +163,9 @@ Ensure the type checker handles:
 
 ### Type Annotation Checking
 
-When a definition has an explicit type annotation:
+Phase 7 already handles definition-level type annotations (the `def.typeAnnotation` field). This phase extends that to ensure it works correctly with higher-order types.
+
+When a definition has an explicit type annotation (e.g., `intId *i64: x` or `transform *(i64|i64): (double x)`):
 
 ```swift
 func inferAnnotatedDefinition(env: inout TypeEnv, def: Definition, gen: inout TypeVarGenerator) throws {
@@ -256,10 +262,10 @@ welang's polymorphism is standard ML rank-1. Some things to verify:
 
 ### Type Annotation Tests
 
-- `testAnnotatedDefinitionMatches`: `"n: *i64 42"` — annotation matches inferred type
-- `testAnnotatedDefinitionMismatch`: `"n: *string 42"` — throws type mismatch
-- `testAnnotatedFunctionType`: `"f: *(i64|i64) (double x)"` — function type annotation
-- `testAliasAnnotation`: `"n: 'i64 42"` — structural alias check
+- `testAnnotatedDefinitionMatches`: `"n *i64: 42"` — annotation matches inferred type
+- `testAnnotatedDefinitionMismatch`: `"n *string: 42"` — throws type mismatch
+- `testAnnotatedFunctionType`: `"f *(i64|i64): (double x)"` — function type annotation before colon
+- `testAliasAnnotation`: `"n 'i64: 42"` — structural alias check
 
 ### Nominal vs. Structural Tests
 
@@ -267,10 +273,14 @@ welang's polymorphism is standard ML rank-1. Some things to verify:
 - `testNominalTypeCheckFails`: value tagged with `*Point` does not match `*Vec` even if same structure
 - `testStructuralTypeCheckPasses`: untagged value matches `'{x: f64, y: f64}` by structure
 
-### Closure Tests
+### Closure and Lambda Tests
 
 - `testInferClosure`: function that references outer scope name — type includes the captured variable's type correctly
 - `testClosurePolymorphism`: captured variable constrains the function's type
+- `testLambdaAsHigherOrderArgument`: `"r: (map (it: multiply it 2) [1,2,3])"` — lambda passed to higher-order function
+- `testNestedLambdasCurrying`: `"add3: (a: (b: (c: addAll a b c)))"` — nested lambdas infer curried type
+- `testLambdaCapturesOuterX`: `"f: (something (it: add it x) 1)"` — lambda captures outer `x`, `it` is the lambda's own param
+- `testLambdaComposition`: `"f: (it: it | double | increment)"` — lambda with pipe body infers correct composition type
 
 ### Error Tests
 
@@ -291,12 +301,13 @@ welang's polymorphism is standard ML rank-1. Some things to verify:
 5. Explicit type annotations are checked against inferred types.
 6. Curried application infers types correctly through partial application.
 7. Nominal and structural type checking behaves correctly per annotation kind.
+8. Lambdas with named parameters (`(name: body)`) infer and check types correctly, including in higher-order and closure contexts.
 
 ## Important Notes
 
 - **Don't break existing tests**: All Phase 7 inference tests must still pass.
 - **Higher-order functions are already supported by Algorithm W** — the main work here is ensuring all edge cases are handled and writing comprehensive tests.
-- **Closures don't need special AST support** — they are regular functions that happen to reference outer names. The type checker already handles this because `x` is looked up in the environment.
+- **Lambdas are closures**: `(it: add it x)` captures `x` from the outer scope. The type checker handles this because both `it` and `x` are looked up in the environment — `it` is bound by the lambda, `x` is found in the enclosing scope.
 - **The value restriction is important**: without it, mutable state (if ever added) could break type safety. Even without mutation, it prevents some confusing type behaviors.
 - Keep all types `public` and `Equatable`.
 - Run `swift test` before considering this phase complete.

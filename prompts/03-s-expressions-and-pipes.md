@@ -7,7 +7,11 @@ Implement parsing for welang's two forms of function application:
 1. **Prefix notation** (S-expressions): Lisp-style `(f arg1 arg2)` where the first element is applied to the rest.
 2. **Postfix notation** (pipe combinators): Forth-style `(a | f | g)` where data flows left-to-right through a pipeline.
 
-These are welang's only mechanism for computation. There are no infix operators. After this phase, the parser can handle programs like:
+These are welang's only mechanism for computation. There are no infix operators.
+
+3. **Lambda with named parameter**: `(name: body)` where the implicit parameter `x` is renamed for clarity, especially useful in nested closures.
+
+After this phase, the parser can handle programs like:
 
 ```we
 result: (add 1 2)
@@ -16,6 +20,12 @@ mixed: (1 | add 2 | multiply 3)
 explicit: (1 | 3 2 | 6 5 4)
 nested: (add (multiply 2 3) 4)
 identity: (x)
+
+# Lambda with named parameter — renames x to "it" for clarity
+nested: (something (it: do it) x)
+
+# Named parameter with pipes
+transform: (it: it | double | increment)
 ```
 
 ## Background
@@ -73,6 +83,28 @@ uniform: (
 # `| add [x, 1]` — leading pipe, so x is threaded from the function's argument
 ```
 
+### Lambda with Named Parameter (Closure Clarity)
+
+By default, every function's input is the implicit variable `x`. This works well for simple functions, but in nested closures it becomes ambiguous which `x` you mean. welang allows **renaming** the parameter using the syntax `(name: body)`:
+
+```we
+nested: (something (it: do it) x)
+```
+
+Here, `(it: do it)` is a lambda (anonymous function) where:
+- `it` is the parameter name (replaces `x` inside this lambda)
+- `do it` is the body — applies `do` to `it`
+- Within the body, `it` refers to this lambda's input, while `x` would refer to the outer function's input
+
+This is directly analogous to ML's `fn it => do(it)` or Haskell's `\it -> do it`. The `name:` prefix at the start of a parenthesized expression triggers lambda parsing.
+
+Named parameters also work with pipes:
+
+```we
+transform: (it: it | double | increment)
+# Equivalent to: fn it => increment(double(it))
+```
+
 ## Project Context
 
 ### Files to Modify
@@ -118,6 +150,11 @@ public indirect enum Expr: Equatable {
     /// A chain of clauses where each clause receives the output of the previous.
     /// The `clauses` array has at least 2 elements.
     case pipe(clauses: [Expr], Span)
+
+    /// Lambda with named parameter: `(it: body)`
+    /// Renames the implicit `x` to a custom name for clarity in closures.
+    /// `(it: do it)` → .lambda(param: "it", body: .apply(.name("do"), [.name("it")]))
+    case lambda(param: String, body: Expr, Span)
 }
 ```
 
@@ -148,6 +185,22 @@ public indirect enum Expr: Equatable {
 **Single-element parens**: `(x)` is just the inner expression — no wrapping apply. It's `.name("x")`.
 
 **Leading pipe**: `(| add 1 | increment)` — the parser should generate a `.pipe` whose first clause is the implicit input. Represent this as a pipe where the first clause is a special sentinel. Use `.name("x", span)` as the implicit first clause, since the leading pipe means "take the function's implicit input."
+
+**Lambda with named parameter**: `(it: do it)` becomes:
+```
+.lambda(
+    param: "it",
+    body: .apply(function: .name("do"), arguments: [.name("it")]),
+    _
+)
+```
+
+The body of a lambda is parsed using the same `PipeExpr` rule — it can contain pipes:
+
+```
+(it: it | double | increment)
+→ .lambda(param: "it", body: .pipe([.name("it"), .name("double"), .name("increment")]), _)
+```
 
 ## Parsing Rules
 
@@ -182,8 +235,11 @@ Atom = IntegerLiteral
    - Consume `(`
    - If immediately followed by `)`: return `.unit`
    - Handle **leading pipe**: if current token is `|`, insert `.name("x", span)` as the first clause and proceed to parse the rest as a pipe expression
+   - Handle **lambda with named parameter**: if current token is `.label` **and** the next token is `.colon`, this is a lambda. Consume the label (parameter name), consume `:`, parse the body as a `PipeExpr`, consume `)`, return `.lambda(param:body:span:)`
    - Otherwise, parse a `PipeExpr`
    - Consume `)`
+
+   **Lambda disambiguation**: The `(label: ...)` form is unambiguous inside parentheses. In welang, `label:` inside `()` is always a lambda parameter. Compare with `{label: ...}` which is a tuple entry and `[label: ...]` which is an array entry — each bracket type has its own meaning for `label:`.
 
 3. **`parsePipeExpr()`**: Parse a sequence of pipe-separated clauses.
    - Parse the first clause
@@ -227,6 +283,9 @@ Add to `ParseError` if not already present:
 - `testApplyInequality`: different function or arguments → not equal
 - `testPipeEquality`: two `.pipe` with same clauses are equal
 - `testPipeInequality`: different clauses → not equal
+- `testLambdaEquality`: two `.lambda` with same param and body are equal
+- `testLambdaInequality`: different param names → not equal
+- `testLambdaBodyInequality`: same param, different body → not equal
 
 ### Parser Tests
 
@@ -273,6 +332,14 @@ Add to `ParseError` if not already present:
 - `testParseMixedPrefixPostfix`: `"r: (1 | 3 2 | 6 5 4)"` → correct pipe with apply clauses
 - `testParseNumberAsFunction`: `"r: (3 2 1)"` → `.apply(.integerLiteral("3"), [.integerLiteral("2"), .integerLiteral("1")])`
 
+**Lambda with named parameter:**
+- `testParseLambdaSimple`: `"f: (it: it)"` → `.lambda(param: "it", body: .name("it"))`
+- `testParseLambdaWithApply`: `"f: (it: do it)"` → `.lambda(param: "it", body: .apply(.name("do"), [.name("it")]))`
+- `testParseLambdaWithPipe`: `"f: (it: it | double | increment)"` → lambda whose body is a pipe
+- `testParseLambdaAsArgument`: `"r: (something (it: do it) x)"` → lambda nested as argument in apply
+- `testParseLambdaNestedInPipe`: `"r: (data | (item: transform item))"` → lambda as a pipe clause
+- `testParseLambdaDifferentName`: `"f: (val: process val)"` → any label can be a param name
+
 **Error cases:**
 - `testParseMissingClosingParen`: `"r: (add 1"` → throws `ParseError.expectedClosingParen`
 - `testParseEmptyClause`: `"r: (1 | | 2)"` → throws `ParseError.emptyClause`
@@ -291,10 +358,13 @@ Add to `ParseError` if not already present:
 5. Nested expressions work to arbitrary depth.
 6. Multi-line expressions (newlines inside parens) parse correctly.
 7. Leading pipe inserts the implicit `x` as the first clause.
+8. Lambda with named parameter `(name: body)` parses into `.lambda` nodes.
 
 ## Important Notes
 
 - **Currying is implicit**: `(add 1 2)` is represented as a single `.apply` with two arguments. The semantic phase (later) will desugar it into nested single-argument applications. The parser does not need to curry.
 - **Newlines inside parens are whitespace**: this is critical for readability. Track paren nesting depth to control newline significance.
 - **No operators**: there is no `+`, `-`, etc. All computation is function application. The minus sign in `-1` is part of the number literal, not an operator.
+- **Lambda is syntactic sugar**: `(it: expr)` is equivalent to a function definition where the parameter is named `it` instead of `x`. At the type level, it is `∀α β. α → β` just like any other function. The difference is purely about scope naming.
+- **`label:` disambiguation by bracket type**: `(label: ...)` is a lambda. `{label: ...}` is a tuple entry. `[label: ...]` is an array entry. Each bracket context gives `:` its own meaning.
 - Run `swift test` before considering this phase complete.

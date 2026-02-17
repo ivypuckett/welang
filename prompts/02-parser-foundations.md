@@ -4,7 +4,7 @@
 
 Implement the foundational parser for welang. This phase builds an abstract syntax tree (AST) from the token stream produced by the Phase 1 lexer. You will handle:
 
-- **Definitions** (the only top-level form): `label: value`
+- **Definitions** (the only top-level form): `label: value` or `label type: value`
 - **Scalar literals**: integer, float, string, interpolated string
 - **Labels** (references to other definitions)
 - **Discard** (`_`)
@@ -19,11 +19,18 @@ name: "alice"
 pi: 3.14
 blank: ()
 ignore: _
+anInt u32: 23
 ```
 
 ## Background
 
-welang has a uniform top-level structure: every source file is a sequence of **definitions**, each of which is `label: value`. There are no bare expressions at the top level. A "function" is just a definition whose value is an s-expression (Phase 3). This design is directly inspired by ML's `let`-binding model, where every construct is a named binding.
+welang has a uniform top-level structure: every source file is a sequence of **definitions**. There are no bare expressions at the top level. A "function" is just a definition whose value is an s-expression (Phase 3). This design is directly inspired by ML's `let`-binding model, where every construct is a named binding.
+
+Definitions come in two forms:
+- **Untyped**: `label: value` — the type is inferred from the value.
+- **Typed**: `label type: value` — the type is explicitly specified between the label and the colon.
+
+For example, `anInt u32: 23` declares `anInt` with explicit type `u32` and value `23`. The type annotation is optional and serves as a constraint that the type checker (Phase 7) will validate.
 
 The implicit input variable `x` comes from mathematical convention — every function body can reference its single argument as `x`, mirroring ML's always-monadic (single-argument) function style.
 
@@ -95,16 +102,19 @@ public struct Program: Equatable {
 
 ### Definition
 
-A definition binds a label to an expression:
+A definition binds a label to an expression, with an optional type annotation:
 
 ```swift
 public struct Definition: Equatable {
     public let label: String
+    public let typeAnnotation: Expr?  // optional type between label and colon
     public let value: Expr
     public let span: Span   // covers the full definition from label through value
-    public init(label: String, value: Expr, span: Span) { ... }
+    public init(label: String, typeAnnotation: Expr?, value: Expr, span: Span) { ... }
 }
 ```
+
+The `typeAnnotation` is the expression between the label and the colon. In this phase, only bare label type names are supported (e.g., `u32` in `anInt u32: 23`). Phase 6 extends this to full type expressions (`*u32`, `'(u32|string)`, etc.).
 
 ### Expr (expression node)
 
@@ -196,10 +206,17 @@ Skip leading newlines, then parse definitions separated by newlines. Trailing ne
 #### Definition
 
 ```
-Definition = Label ":" Expr
+Definition = Label TypeAnnotation? ":" Expr
+TypeAnnotation = Expr    (in this phase, only a bare Label is supported)
 ```
 
-The current token must be `.label`. Consume it, expect `.colon`, then parse an expression.
+The current token must be `.label`. Consume it. Then:
+- If the next token is `.colon`: no type annotation — consume `:` and parse the value expression.
+- If the next token is **not** `.colon`: parse the type annotation as an expression (in this phase, only a label is expected — e.g., `u32`), then expect `.colon`, then parse the value expression.
+
+This handles both `zero: 0` and `anInt u32: 23`. The disambiguation is unambiguous: after a label, `:` means "start the value"; anything else is the type annotation before the co`:`.
+
+**Lookahead strategy**: After the first label, peek at the next token. If it is `.colon`, proceed with no type annotation. If it is `.label` (and the token after *that* is `.colon`), consume the type label. In Phase 6, this will be upgraded to handle `*`, `'`, and compound type expressions.
 
 #### Expr (for this phase)
 
@@ -258,6 +275,8 @@ Replace existing placeholder tests with:
 
 - `testDefinitionEquality`: two `Definition` values with same fields are equal
 - `testDefinitionInequality`: different labels or values are not equal
+- `testDefinitionWithTypeAnnotationEquality`: definitions with same type annotation are equal
+- `testDefinitionWithAndWithoutTypeAnnotation`: typed vs untyped definitions are not equal
 - `testExprIntegerLiteralEquality`: `.integerLiteral("42", span)` equality
 - `testExprFloatLiteralEquality`: `.floatLiteral("3.14", span)` equality
 - `testExprStringLiteralEquality`: `.stringLiteral("hi", span)` equality
@@ -276,6 +295,11 @@ Replace existing placeholder tests with:
 - `testParseFloatDefinition`: `"pi: 3.14"` → `.floatLiteral("3.14", _)`
 - `testParseStringDefinition`: `"name: \"alice\""` → `.stringLiteral("alice", _)`
 - `testParseInterpolatedStringDefinition`: `` "greeting: `hello {{name}}`" `` → `.interpolatedStringLiteral(...)`
+
+**Typed Definitions:**
+- `testParseTypedDefinition`: `"anInt u32: 23"` → definition with `typeAnnotation: .name("u32", _)` and `value: .integerLiteral("23", _)`
+- `testParseTypedDefinitionFloat`: `"pi f64: 3.14"` → definition with type annotation `f64`
+- `testParseUntypedDefinition`: `"zero: 0"` → definition with `typeAnnotation: nil`
 
 **Names and Discard:**
 - `testParseNameReference`: `"alias: other"` → `.name("other", _)`

@@ -48,16 +48,18 @@ The key insight of HM: type inference is **decidable** and produces **principal 
 
 ### welang-Specific Extensions
 
-1. **Implicit parameter `x`**: Every function body has access to `x`, the implicit single argument. `x` gets a fresh type variable when type-checking a function definition.
+1. **Implicit parameter `x` and named parameters**: Every function body has access to `x`, the implicit single argument. `x` gets a fresh type variable when type-checking a function definition. Lambda expressions (`(name: body)`) rename `x` to a custom name — the type checker must bind the named parameter instead of `x` when entering a lambda scope.
 
-2. **Structural vs. Nominal type checking**:
+2. **Definition-level type annotations**: Definitions can have an optional type annotation between the label and the colon: `anInt u32: 23`. The type checker validates that the inferred type of the value matches the declared type.
+
+3. **Structural vs. Nominal type checking**:
    - Alias types (`'T`): checked structurally — if the structure matches, the type is satisfied.
    - Identifier types (`*T`): checked nominally — the value must have been explicitly constructed with that type tag.
    - This is an extension to standard HM that adds a nominal/structural distinction during unification.
 
-3. **Curried functions**: `(add 1 2)` is implicitly `(add 1) 2`. During inference, `add` gets type `α → β → γ`, and each application narrows the types.
+4. **Curried functions**: `(add 1 2)` is implicitly `(add 1) 2`. During inference, `add` gets type `α → β → γ`, and each application narrows the types.
 
-4. **Pipe desugaring for inference**: `(a | f)` is semantically `f(a)`. The type checker treats pipes as chained function applications.
+5. **Pipe desugaring for inference**: `(a | f)` is semantically `f(a)`. The type checker treats pipes as chained function applications.
 
 ## Project Context
 
@@ -337,6 +339,14 @@ func w(env: TypeEnv, expr: Expr, gen: inout TypeVarGenerator) throws -> (Substit
         }
         return (s, currentType)
 
+    case .lambda(let param, let body, _):
+        // Lambda with named parameter: (name: body)
+        // Same as inferring a function, but bind `param` instead of `x`
+        let paramType = gen.fresh()
+        let bodyEnv = env.extending(param, with: .mono(paramType))
+        let (s, bodyType) = try w(env: bodyEnv, expr: body, gen: &gen)
+        return (s, .function(s.apply(paramType), bodyType))
+
     // ... handle other cases: tuple, array, discard, unit, type annotations ...
     }
 }
@@ -355,22 +365,38 @@ func inferDefinition(env: inout TypeEnv, def: Definition, gen: inout TypeVarGene
 
     let (s, bodyType) = try w(env: bodyEnv, expr: def.value, gen: &gen)
 
-    // If the body references x, the definition is a function x → body
-    // If x is unused, the definition is just the body value
+    // If the body references x (or contains lambdas that make it a function),
+    // the definition is a function x → body.
+    // If x is unused, the definition is just the body value.
     let defType: Type
-    if referencesX(def.value) {
+    if referencesImplicitParam(def.value) {
         defType = .function(s.apply(xType), bodyType)
     } else {
         defType = bodyType
     }
 
+    // If the definition has a type annotation (e.g., `anInt u32: 23`),
+    // resolve and unify with the inferred type.
+    var finalSub = s
+    let finalType: Type
+    if let annotation = def.typeAnnotation {
+        let annotationType = try resolveAnnotationType(annotation, env: env)
+        let s2 = try unify(finalSub.apply(defType), annotationType)
+        finalSub = finalSub.compose(with: s2)
+        finalType = finalSub.apply(annotationType)
+    } else {
+        finalType = finalSub.apply(defType)
+    }
+
     // Generalize and add to environment (let-polymorphism)
-    let scheme = generalize(env: s.apply(env), type: s.apply(defType))
-    env = s.apply(env).extending(def.label, with: scheme)
+    let scheme = generalize(env: finalSub.apply(env), type: finalType)
+    env = finalSub.apply(env).extending(def.label, with: scheme)
 }
 ```
 
-`referencesX` checks if the expression contains `.name("x", _)` anywhere.
+`referencesImplicitParam` checks if the expression contains `.name("x", _)` anywhere (but not inside `.lambda` nodes, where `x` would refer to the lambda's own scope — lambdas have their own named parameter).
+
+**`resolveAnnotationType`**: Converts the type annotation expression into an internal `Type`. In Phase 2, the annotation is a bare label (e.g., `.name("u32", _)`), which resolves to a primitive type. In Phase 6, this will handle the full type expression syntax (`*`, `'`, compound types, etc.).
 
 ### Top-Level Inference
 
@@ -453,6 +479,18 @@ Create `Tests/WeLangTests/TypeInferenceTests.swift`.
 - `testInferPolymorphicDefinition`: a definition used at two different types
 - `testInferUndefinedName`: `"r: (foo 1)"` where foo is not defined → throws `undefinedName`
 - `testInferTypeMismatch`: `"r: (add \"hello\" 1)"` → throws `typeMismatch`
+
+### Lambda Tests
+- `testInferLambdaIdentity`: `"f: (it: it)"` → inferred as `∀α. α → α`
+- `testInferLambdaWithApplication`: `"f: (it: add it 1)"` → parameter constrained by usage
+- `testInferLambdaAsArgument`: `"r: (map (it: multiply it 2) [1,2,3])"` → lambda type matches map's expected function type
+- `testInferLambdaShadowsX`: in `"f: (it: x)"`, `x` refers to outer function's param, `it` is the lambda's param — both get correct types
+- `testInferNestedLambdas`: `"f: (a: (b: add a b))"` → type is `∀α. α → α → α` (curried via nested lambdas)
+
+### Typed Definition Tests
+- `testInferTypedDefinitionMatches`: `"anInt u32: 23"` — annotation matches inferred type
+- `testInferTypedDefinitionMismatch`: `"bad string: 23"` — annotation does not match → throws `typeMismatch`
+- `testInferUntypedDefinition`: `"x: 42"` — no annotation, type inferred normally
 
 ### Let-Polymorphism Tests
 - `testLetPolymorphism`: define `id: x` (identity), then use it as both `(id 1)` and `(id "hello")` — both should succeed because `id` has type `∀α. α → α`

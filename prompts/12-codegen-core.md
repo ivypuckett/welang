@@ -61,10 +61,11 @@ LLVMDisposeBuilder(builder)
 welang's codegen follows a straightforward strategy:
 
 1. **Top-level definitions** become either LLVM global constants or LLVM functions.
-2. **Functions** (definitions whose value references `x`) become LLVM functions with one parameter.
+2. **Functions** (definitions whose value references `x`, or lambda expressions) become LLVM functions with one parameter.
 3. **Scalar literals** become LLVM constants.
 4. **Function application** becomes LLVM `call` instructions.
 5. **Pipes** are desugared into nested calls at the IR level.
+6. **Lambdas** (`(name: body)`) are compiled as closures — anonymous functions with a captured environment.
 
 ### Currying via Closures
 
@@ -268,7 +269,7 @@ func generateFunctionDefinition(_ def: Definition) throws {
     let entry = LLVMAppendBasicBlockInContext(context, function, "entry")
     LLVMPositionBuilderAtEnd(builder, entry)
 
-    // Bind parameter to "x"
+    // Bind parameter to "x" (the implicit parameter name)
     let param = LLVMGetParam(function, 0)
     LLVMSetValueName2(param, "x", 1)
     namedValues["x"] = param
@@ -281,6 +282,46 @@ func generateFunctionDefinition(_ def: Definition) throws {
 
     // Store function reference
     namedValues[def.label] = function
+}
+```
+
+### Lambda Expressions
+
+Lambdas (`(name: body)`) are anonymous functions with a named parameter. They compile to closures — an LLVM function plus a captured environment:
+
+```swift
+func generateLambda(param: String, body: Expr) throws -> LLVMValueRef {
+    // Save current state
+    let savedValues = namedValues
+    let savedBlock = LLVMGetInsertBlock(builder)
+
+    // Determine types from type inference
+    let inputType = llvmType(for: getLambdaInputType(param, body))
+    let outputType = llvmType(for: getLambdaOutputType(param, body))
+
+    // Create the lambda's LLVM function
+    var paramTypes: [LLVMTypeRef?] = [inputType]
+    let funcType = LLVMFunctionType(outputType, &paramTypes, 1, 0)
+    let function = LLVMAddFunction(module, "lambda", funcType)
+
+    let entry = LLVMAppendBasicBlockInContext(context, function, "entry")
+    LLVMPositionBuilderAtEnd(builder, entry)
+
+    // Bind the named parameter (e.g., "it" instead of "x")
+    let paramVal = LLVMGetParam(function, 0)
+    LLVMSetValueName2(paramVal, param, UInt32(param.utf8.count))
+    namedValues[param] = paramVal
+
+    // Generate body (outer scope names are still accessible for captures)
+    let result = try generateExpr(body)
+    LLVMBuildRet(builder, result)
+
+    // Restore state
+    namedValues = savedValues
+    LLVMPositionBuilderAtEnd(builder, savedBlock)
+
+    // Wrap as closure and return
+    return try wrapAsClosure(function: function)
 }
 ```
 
@@ -315,6 +356,9 @@ func generateExpr(_ expr: Expr) throws -> LLVMValueRef {
 
     case .pipe(let clauses, _):
         return try generatePipe(clauses: clauses)
+
+    case .lambda(let param, let body, _):
+        return try generateLambda(param: param, body: body)
 
     case .discard(_):
         return LLVMGetUndef(LLVMInt64TypeInContext(context))
@@ -532,6 +576,12 @@ public enum CodegenError: Error, Equatable, CustomStringConvertible {
 - `testCodegenFunctionWithReturn`: function returns computed value
 - `testCodegenIdentityFunction`: `"id: x"` → function that returns its parameter
 
+**Lambda codegen:**
+- `testCodegenLambda`: `"f: (it: it)"` → emits an anonymous function with one parameter named "it"
+- `testCodegenLambdaWithBody`: `"f: (it: multiply it 2)"` → lambda function with call in body
+- `testCodegenLambdaAsArgument`: `"r: (map (it: multiply it 2) list)"` → lambda passed as closure argument
+- `testCodegenLambdaCapture`: `"f: (it: add it x)"` → lambda captures outer `x`
+
 **Application codegen:**
 - `testCodegenApply`: `"r: (add 1 2)"` → emits call instruction
 - `testCodegenNestedApply`: `"r: (add (multiply 2 3) 4)"` → nested calls
@@ -565,6 +615,7 @@ public enum CodegenError: Error, Equatable, CustomStringConvertible {
 6. Pipe expressions generate chained calls.
 7. The generated LLVM module passes verification.
 8. Simple programs execute correctly via JIT.
+9. Lambda expressions compile to closures with correct parameter binding.
 
 ## Important Notes
 
