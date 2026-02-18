@@ -34,11 +34,23 @@ public enum CompileError: Error, CustomStringConvertible {
 
 public enum LexError: Error, Equatable, CustomStringConvertible {
     case unexpectedCharacter(ch: Character, pos: Int)
+    case invalidEscape(ch: Character, pos: Int)
+    case unterminatedString(pos: Int)
+    case unterminatedInterpolatedString(pos: Int)
+    case unterminatedInterpolation(pos: Int)
 
     public var description: String {
         switch self {
         case .unexpectedCharacter(let ch, let pos):
             return "unexpected character '\(ch)' at byte \(pos)"
+        case .invalidEscape(let ch, let pos):
+            return "invalid escape sequence '\\(\(ch))' at byte \(pos)"
+        case .unterminatedString(let pos):
+            return "unterminated string literal starting at byte \(pos)"
+        case .unterminatedInterpolatedString(let pos):
+            return "unterminated interpolated string starting at byte \(pos)"
+        case .unterminatedInterpolation(let pos):
+            return "unterminated interpolation starting at byte \(pos)"
         }
     }
 }
