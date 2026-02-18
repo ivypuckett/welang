@@ -56,6 +56,57 @@ public func lex(_ source: String) throws -> [Token] {
     return try lexer.scanAll()
 }
 
+// MARK: - ASCII Byte Constants
+
+private enum Ascii {
+    // Whitespace
+    static let tab:       UInt8 = 0x09
+    static let lineFeed:  UInt8 = 0x0A
+    static let carriageReturn: UInt8 = 0x0D
+    static let space:     UInt8 = 0x20
+
+    // Digits
+    static let zero:      UInt8 = 0x30  // '0'
+    static let nine:      UInt8 = 0x39  // '9'
+
+    // Uppercase letters
+    static let upperA:    UInt8 = 0x41
+    static let upperZ:    UInt8 = 0x5A
+
+    // Lowercase letters
+    static let lowerA:    UInt8 = 0x61
+    static let lowerZ:    UInt8 = 0x7A
+
+    // Punctuation & delimiters
+    static let doubleQuote: UInt8 = 0x22  // "
+    static let hash:      UInt8 = 0x23  // #
+    static let singleQuote: UInt8 = 0x27  // '
+    static let leftParen: UInt8 = 0x28  // (
+    static let rightParen: UInt8 = 0x29  // )
+    static let star:      UInt8 = 0x2A  // *
+    static let comma:     UInt8 = 0x2C  // ,
+    static let dash:      UInt8 = 0x2D  // -
+    static let dot:       UInt8 = 0x2E  // .
+    static let colon:     UInt8 = 0x3A  // :
+    static let at:        UInt8 = 0x40  // @
+    static let leftBracket: UInt8 = 0x5B  // [
+    static let backslash: UInt8 = 0x5C  // \
+    static let rightBracket: UInt8 = 0x5D  // ]
+    static let underscore: UInt8 = 0x5F  // _
+    static let backtick:  UInt8 = 0x60  // `
+    static let leftBrace: UInt8 = 0x7B  // {
+    static let pipe:      UInt8 = 0x7C  // |
+    static let rightBrace: UInt8 = 0x7D  // }
+
+    // Escape result bytes
+    static let null:      UInt8 = 0x00
+
+    // Escape sequence source characters (the char after '\')
+    static let charN:     UInt8 = 0x6E  // 'n'
+    static let charT:     UInt8 = 0x74  // 't'
+    static let charR:     UInt8 = 0x72  // 'r'
+}
+
 // MARK: - Internal Lexer
 
 struct Lexer {
@@ -90,13 +141,13 @@ struct Lexer {
         let ch = source[pos]
 
         // 1. Whitespace (space, tab, CR): skip
-        if ch == 0x20 || ch == 0x09 || ch == 0x0D {
+        if ch == Ascii.space || ch == Ascii.tab || ch == Ascii.carriageReturn {
             pos += 1
             return nil
         }
 
         // 2. Newlines: emit .newline, collapsing consecutive newlines
-        if ch == 0x0A {
+        if ch == Ascii.lineFeed {
             let start = pos
             pos += 1
             // Collapse consecutive newlines (possibly separated by whitespace/comments)
@@ -109,23 +160,23 @@ struct Lexer {
         }
 
         // 3. Comments: consume to end of line
-        if ch == 0x23 { // '#'
+        if ch == Ascii.hash {
             skipComment()
             return nil
         }
 
         // 4. Standard strings
-        if ch == 0x22 { // '"'
+        if ch == Ascii.doubleQuote {
             return try scanString()
         }
 
         // 5. Interpolated strings (backtick)
-        if ch == 0x60 { // '`'
+        if ch == Ascii.backtick {
             return try scanInterpolatedString()
         }
 
         // 6. Negative numbers: '-' followed by a digit
-        if ch == 0x2D { // '-'
+        if ch == Ascii.dash {
             if pos + 1 < source.count && isDigit(source[pos + 1]) {
                 return try scanNumber()
             }
@@ -161,11 +212,11 @@ struct Lexer {
     mutating func collapseNewlines() {
         while pos < source.count {
             let ch = source[pos]
-            if ch == 0x20 || ch == 0x09 || ch == 0x0D {
+            if ch == Ascii.space || ch == Ascii.tab || ch == Ascii.carriageReturn {
                 pos += 1
-            } else if ch == 0x0A {
+            } else if ch == Ascii.lineFeed {
                 pos += 1
-            } else if ch == 0x23 { // '#'
+            } else if ch == Ascii.hash {
                 skipComment()
             } else {
                 break
@@ -177,7 +228,7 @@ struct Lexer {
 
     mutating func skipComment() {
         // Consume from '#' through (but not including) the next '\n' or EOF
-        while pos < source.count && source[pos] != 0x0A {
+        while pos < source.count && source[pos] != Ascii.lineFeed {
             pos += 1
         }
     }
@@ -193,25 +244,25 @@ struct Lexer {
         while pos < source.count {
             let ch = source[pos]
 
-            if ch == 0x22 { // closing '"'
+            if ch == Ascii.doubleQuote { // closing "
                 pos += 1
                 let s = String(bytes: value, encoding: .utf8) ?? ""
                 return Token(kind: .stringLiteral(s), span: Span(start: start, end: pos))
             }
 
-            if ch == 0x5C { // backslash
+            if ch == Ascii.backslash {
                 pos += 1
                 if pos >= source.count {
                     throw LexError.unterminatedString(pos: start)
                 }
                 let escaped = source[pos]
                 switch escaped {
-                case 0x5C: value.append(0x5C) // \\
-                case 0x22: value.append(0x22) // \"
-                case 0x6E: value.append(0x0A) // \n
-                case 0x74: value.append(0x09) // \t
-                case 0x72: value.append(0x0D) // \r
-                case 0x30: value.append(0x00) // \0
+                case Ascii.backslash:    value.append(Ascii.backslash)    // \\
+                case Ascii.doubleQuote:  value.append(Ascii.doubleQuote)  // \"
+                case Ascii.charN:        value.append(Ascii.lineFeed)     // \n
+                case Ascii.charT:        value.append(Ascii.tab)          // \t
+                case Ascii.charR:        value.append(Ascii.carriageReturn) // \r
+                case Ascii.zero:         value.append(Ascii.null)         // \0
                 default:
                     throw LexError.invalidEscape(ch: character(at: pos), pos: pos)
                 }
@@ -237,28 +288,28 @@ struct Lexer {
         while pos < source.count {
             let ch = source[pos]
 
-            if ch == 0x60 { // closing '`'
+            if ch == Ascii.backtick { // closing `
                 pos += 1
                 let s = String(bytes: content, encoding: .utf8) ?? ""
                 return Token(kind: .interpolatedStringLiteral(s), span: Span(start: start, end: pos))
             }
 
-            if ch == 0x5C { // backslash — validate escape
+            if ch == Ascii.backslash {
                 pos += 1
                 if pos >= source.count {
                     throw LexError.unterminatedInterpolatedString(pos: start)
                 }
                 let escaped = source[pos]
                 switch escaped {
-                case 0x7B: // \{
-                    content.append(0x5C)
-                    content.append(0x7B)
-                case 0x5C: // \\
-                    content.append(0x5C)
-                    content.append(0x5C)
-                case 0x60: // \`
-                    content.append(0x5C)
-                    content.append(0x60)
+                case Ascii.leftBrace: // \{
+                    content.append(Ascii.backslash)
+                    content.append(Ascii.leftBrace)
+                case Ascii.backslash: // \\
+                    content.append(Ascii.backslash)
+                    content.append(Ascii.backslash)
+                case Ascii.backtick: // \`
+                    content.append(Ascii.backslash)
+                    content.append(Ascii.backtick)
                 default:
                     throw LexError.invalidEscape(ch: character(at: pos), pos: pos)
                 }
@@ -279,7 +330,7 @@ struct Lexer {
         let start = pos
 
         // Consume optional leading '-'
-        if source[pos] == 0x2D {
+        if source[pos] == Ascii.dash {
             pos += 1
         }
 
@@ -289,7 +340,7 @@ struct Lexer {
         }
 
         // Check for '.' followed by digit → float
-        if pos < source.count && source[pos] == 0x2E {
+        if pos < source.count && source[pos] == Ascii.dot {
             if pos + 1 < source.count && isDigit(source[pos + 1]) {
                 pos += 1 // skip '.'
                 while pos < source.count && isDigit(source[pos]) {
@@ -327,19 +378,19 @@ struct Lexer {
 
     func singleCharToken(_ ch: UInt8) -> TokenKind? {
         switch ch {
-        case 0x28: return .leftParen     // (
-        case 0x29: return .rightParen    // )
-        case 0x7B: return .leftBrace     // {
-        case 0x7D: return .rightBrace    // }
-        case 0x5B: return .leftBracket   // [
-        case 0x5D: return .rightBracket  // ]
-        case 0x3A: return .colon         // :
-        case 0x2C: return .comma         // ,
-        case 0x2E: return .dot           // .
-        case 0x7C: return .pipe          // |
-        case 0x40: return .at            // @
-        case 0x2A: return .star          // *
-        case 0x27: return .tick          // '
+        case Ascii.leftParen:    return .leftParen
+        case Ascii.rightParen:   return .rightParen
+        case Ascii.leftBrace:    return .leftBrace
+        case Ascii.rightBrace:   return .rightBrace
+        case Ascii.leftBracket:  return .leftBracket
+        case Ascii.rightBracket: return .rightBracket
+        case Ascii.colon:        return .colon
+        case Ascii.comma:        return .comma
+        case Ascii.dot:          return .dot
+        case Ascii.pipe:         return .pipe
+        case Ascii.at:           return .at
+        case Ascii.star:         return .star
+        case Ascii.singleQuote:  return .tick
         default: return nil
         }
     }
@@ -347,13 +398,13 @@ struct Lexer {
     // MARK: - Character Helpers
 
     func isDigit(_ ch: UInt8) -> Bool {
-        ch >= 0x30 && ch <= 0x39
+        ch >= Ascii.zero && ch <= Ascii.nine
     }
 
     func isLabelStart(_ ch: UInt8) -> Bool {
-        (ch >= 0x61 && ch <= 0x7A) || // a-z
-        (ch >= 0x41 && ch <= 0x5A) || // A-Z
-        ch == 0x5F                     // _
+        (ch >= Ascii.lowerA && ch <= Ascii.lowerZ) ||
+        (ch >= Ascii.upperA && ch <= Ascii.upperZ) ||
+        ch == Ascii.underscore
     }
 
     func isLabelContinue(_ ch: UInt8) -> Bool {
