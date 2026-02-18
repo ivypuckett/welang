@@ -35,6 +35,7 @@ welang has two string forms:
 - `{{expr}}` — the expression between double braces is evaluated and converted to a string. The expression follows normal welang expression syntax.
 - `\{` — escape sequence producing a literal `{` character (prevents interpolation).
 - `\\` — escape sequence producing a literal `\` character.
+- `` \` `` — escape sequence producing a literal backtick character (allows backticks inside the string).
 - All other characters (including newlines) are literal.
 - Interpolated strings are desugared to concatenation at **compile time**. There is zero runtime cost compared to a plain string.
 
@@ -119,11 +120,12 @@ Replace the Phase 1 stub in `Lexer.swift`. When the scanner hits a backtick (`` 
 
 1. Emit `.interpStart`.
 2. Start an empty text buffer. Walk bytes:
+   - `` \` `` → append `` ` `` to buffer (escape processed).
    - `\` + `{` → append `{` to buffer (escape processed).
    - `\` + `\` → append `\` to buffer (escape processed).
    - `\` + anything else → throw `LexError.invalidEscape(ch:pos:)`.
    - `{` + `{` → flush buffer as `.stringSegment(buf)` if non-empty, emit `.interpExprOpen`, enter **expression mode**.
-   - `` ` `` → flush buffer as `.stringSegment(buf)` if non-empty, emit `.interpEnd`, done.
+   - `` ` `` (unescaped) → flush buffer as `.stringSegment(buf)` if non-empty, emit `.interpEnd`, done.
    - EOF → throw `LexError.unterminatedInterpolatedString(pos:)`.
    - Any other byte → append to buffer.
 
@@ -226,6 +228,7 @@ Place in `LexerTests.swift`.
 - `testLexInterpStringMultipleExprs`: `` "`{{a}} and {{b}}`" `` → correct interleaved segments
 - `testLexInterpStringEscapedBrace`: `` "`\\{not interpolated}`" `` → `[.interpStart, .stringSegment("{not interpolated}"), .interpEnd, .eof]` (single `\{` produces `{`; subsequent characters are literal)
 - `testLexInterpStringEscapedBackslash`: `` "`a \\\\  b`" `` → `.stringSegment` containing literal `\`
+- `testLexInterpStringEscapedBacktick`: `` "`a \\` b`" `` → `[.interpStart, .stringSegment("a ` b"), .interpEnd, .eof]`
 - `testLexInterpStringNestedBraces`: `` "`{{ {k: 1} }}`" `` → `.interpExprOpen`, `.leftBrace`, `.label("k")`, `.colon`, `.integerLiteral("1")`, `.rightBrace`, `.interpExprClose`
 - `testLexInterpStringMultiline`: backtick string with a literal newline in the text → the newline appears in the `.stringSegment` content; no `.newline` token is emitted mid-string
 - `testLexUnterminatedInterpolation`: `` "`hello {{name`" `` throws `LexError.unterminatedInterpolation`

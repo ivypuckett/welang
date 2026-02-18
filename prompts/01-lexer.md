@@ -80,7 +80,7 @@ Below is every `TokenKind` case the lexer must produce. The span of each token c
 | `.integerLiteral(String)` | `0`, `42`, `-1` | Decimal digits, optionally preceded by `-`. Store the raw text so the parser can decide signedness later. |
 | `.floatLiteral(String)` | `0.1`, `-3.14` | Digits, a `.`, more digits, optionally preceded by `-`. Must have digits on both sides of the dot. |
 | `.stringLiteral(String)` | `"hello"` | Double-quoted. Supports escapes: `\\`, `\"`, `\n`, `\t`, `\r`, `\0`. The stored value is the **unescaped** content (without outer quotes). |
-| `.interpolatedStringLiteral(String)` | `` `text {{expr}}` `` | **Temporary stub — replaced in Phase 5.** Backtick-delimited. Store the raw content between backticks as a single string. Validate escapes during scanning: `\{` and `\\` are the only valid escape sequences (stored raw, not processed); any other `\x` throws `LexError.invalidEscape`. |
+| `.interpolatedStringLiteral(String)` | `` `text {{expr}}` `` | **Temporary stub — replaced in Phase 5.** Backtick-delimited. Store the raw content between backticks as a single string. Validate escapes during scanning: `\{`, `\\`, and `` \` `` are the only valid escape sequences (stored raw, not processed); any other `\x` throws `LexError.invalidEscape`. |
 
 ### Interpolated String Structure Tokens
 
@@ -89,7 +89,7 @@ These five `TokenKind` cases are defined now so the enum is complete, but the le
 | Case | Notes |
 |------|-------|
 | `.interpStart` | Opening backtick `` ` `` |
-| `.stringSegment(String)` | A literal text segment; escape sequences (`\{` → `{`, `\\` → `\`) are processed; stored value is unescaped |
+| `.stringSegment(String)` | A literal text segment; escape sequences (`` \` `` → `` ` ``, `\{` → `{`, `\\` → `\`) are processed; stored value is unescaped |
 | `.interpExprOpen` | The `{{` that opens an embedded expression |
 | `.interpExprClose` | The `}}` that closes an embedded expression |
 | `.interpEnd` | Closing backtick `` ` `` |
