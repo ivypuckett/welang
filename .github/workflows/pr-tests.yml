@@ -1,0 +1,30 @@
+name: PR Tests
+
+on:
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  test:
+    name: Run Swift Tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install LLVM 18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18-dev
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Build
+        run: swift build
+
+      - name: Run tests
+        run: swift test
