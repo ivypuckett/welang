@@ -80,7 +80,21 @@ Below is every `TokenKind` case the lexer must produce. The span of each token c
 | `.integerLiteral(String)` | `0`, `42`, `-1` | Decimal digits, optionally preceded by `-`. Store the raw text so the parser can decide signedness later. |
 | `.floatLiteral(String)` | `0.1`, `-3.14` | Digits, a `.`, more digits, optionally preceded by `-`. Must have digits on both sides of the dot. |
 | `.stringLiteral(String)` | `"hello"` | Double-quoted. Supports escapes: `\\`, `\"`, `\n`, `\t`, `\r`, `\0`. The stored value is the **unescaped** content (without outer quotes). |
-| `.interpolatedStringLiteral(String)` | `` `text {{expr}}` `` | Backtick-delimited. For now, store the **raw** content between the backticks as a single string (interpolation parsing is Phase 5). Escapes: `\{` (literal brace), `\\` (literal backslash). |
+| `.interpolatedStringLiteral(String)` | `` `text {{expr}}` `` | **Temporary stub — replaced in Phase 5.** Backtick-delimited. Store the raw content between backticks as a single string. Validate escapes during scanning: `\{` and `\\` are the only valid escape sequences (stored raw, not processed); any other `\x` throws `LexError.invalidEscape`. |
+
+### Interpolated String Structure Tokens
+
+These five `TokenKind` cases are defined now so the enum is complete, but the lexer **does not emit them until Phase 5** replaces the stub scanner above.
+
+| Case | Notes |
+|------|-------|
+| `.interpStart` | Opening backtick `` ` `` |
+| `.stringSegment(String)` | A literal text segment; escape sequences (`\{` → `{`, `\\` → `\`) are processed; stored value is unescaped |
+| `.interpExprOpen` | The `{{` that opens an embedded expression |
+| `.interpExprClose` | The `}}` that closes an embedded expression |
+| `.interpEnd` | Closing backtick `` ` `` |
+
+Between `.interpExprOpen` and `.interpExprClose`, the lexer emits ordinary tokens for the embedded expression — labels, literals, punctuation, etc.
 
 ### Identifiers and Labels
 
@@ -172,9 +186,11 @@ If a string is never closed (EOF before closing `"`), throw `LexError.unterminat
 
 ### Interpolated String Scanning
 
-For interpolated strings (`` ` ``), scan everything between the opening and closing backtick. The only escapes recognized are `\{` (literal left brace) and `\\` (literal backslash). Store the raw content between backticks (including `{{...}}` sequences) — the actual interpolation parsing happens in Phase 5.
+**Phase 1 stub behaviour**: scan everything between the opening and closing backtick and emit a single `.interpolatedStringLiteral(rawContent)` token. The raw content is stored as-is (escapes are not processed). However, validate escapes during scanning: `\{` and `\\` are the only valid escape sequences. If a backslash is followed by any other character, throw `LexError.invalidEscape(ch:pos:)`. This keeps escape validation consistent with standard strings.
 
 If the backtick string is never closed, throw `LexError.unterminatedInterpolatedString(pos:)`.
+
+Phase 5 will replace this stub with a full structured implementation that emits `.interpStart`, interleaved `.stringSegment` / `.interpExprOpen` … `.interpExprClose` groups, and `.interpEnd`.
 
 ## Error Cases to Add
 
@@ -186,6 +202,7 @@ public enum LexError: Error, Equatable, CustomStringConvertible {
     case invalidEscape(ch: Character, pos: Int)
     case unterminatedString(pos: Int)
     case unterminatedInterpolatedString(pos: Int)
+    case unterminatedInterpolation(pos: Int)  // {{ without matching }} — used starting Phase 5
 }
 ```
 
@@ -215,6 +232,7 @@ Place tests in `Tests/WeLangTests/LexerTests.swift`. Preserve the existing tests
 - `testLexInvalidEscape`: `"\"bad\\x\""` throws `LexError.invalidEscape`
 - `testLexInterpolatedString`: `` "`hello {{name}}`" `` → `[.interpolatedStringLiteral("hello {{name}}"), .eof]`
 - `testLexUnterminatedInterpolatedString`: `` "`oops" `` throws `LexError.unterminatedInterpolatedString`
+- `testLexInvalidEscapeInInterpolatedString`: `` "`bad\\x`" `` throws `LexError.invalidEscape`
 
 ### Label and Discard Tests
 - `testLexLabel`: `"foo"` → `[.label("foo"), .eof]`
