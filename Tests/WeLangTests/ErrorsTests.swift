@@ -10,6 +10,31 @@ final class ErrorsTests: XCTestCase {
         XCTAssertEqual(err.description, "unexpected character '@' at byte 5")
     }
 
+    func testLexErrorInvalidEscapeDisplay() {
+        let err = LexError.invalidEscape(ch: "x", pos: 3)
+        XCTAssertTrue(err.description.contains("invalid escape"))
+        XCTAssertTrue(err.description.contains("x"))
+        XCTAssertTrue(err.description.contains("3"))
+    }
+
+    func testLexErrorUnterminatedStringDisplay() {
+        let err = LexError.unterminatedString(pos: 0)
+        XCTAssertTrue(err.description.contains("unterminated string"))
+        XCTAssertTrue(err.description.contains("0"))
+    }
+
+    func testLexErrorUnterminatedInterpolatedStringDisplay() {
+        let err = LexError.unterminatedInterpolatedString(pos: 7)
+        XCTAssertTrue(err.description.contains("unterminated interpolated string"))
+        XCTAssertTrue(err.description.contains("7"))
+    }
+
+    func testLexErrorUnterminatedInterpolationDisplay() {
+        let err = LexError.unterminatedInterpolation(pos: 10)
+        XCTAssertTrue(err.description.contains("unterminated interpolation"))
+        XCTAssertTrue(err.description.contains("10"))
+    }
+
     func testParseErrorDisplay() {
         let err = ParseError.unexpectedToken(span: Span(start: 0, end: 3))
         XCTAssertTrue(err.description.contains("unexpected token"))
