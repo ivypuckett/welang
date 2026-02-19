@@ -3,32 +3,78 @@ import XCTest
 
 final class ASTTests: XCTestCase {
 
-    func testEmptyProgram() {
-        let program = Program(items: [])
-        XCTAssertTrue(program.items.isEmpty)
-    }
+    private let s0 = Span(start: 0, end: 1)
+    private let s1 = Span(start: 2, end: 3)
 
-    func testProgramEquality() {
-        let a = Program(items: [])
-        let b = Program(items: [])
+    // MARK: - Definition
+
+    func testDefinitionEquality() {
+        let a = Definition(label: "foo", typeAnnotation: nil, value: .integerLiteral("1", s0), span: s0)
+        let b = Definition(label: "foo", typeAnnotation: nil, value: .integerLiteral("1", s0), span: s0)
         XCTAssertEqual(a, b)
     }
 
-    func testProgramInequality() {
-        let a = Program(items: [])
-        let b = Program(items: [.placeholder(Span(start: 0, end: 1))])
+    func testDefinitionInequality() {
+        let a = Definition(label: "foo", typeAnnotation: nil, value: .integerLiteral("1", s0), span: s0)
+        let b = Definition(label: "bar", typeAnnotation: nil, value: .integerLiteral("1", s0), span: s0)
         XCTAssertNotEqual(a, b)
     }
 
-    func testItemPlaceholderEquality() {
-        let a = Item.placeholder(Span(start: 0, end: 1))
-        let b = Item.placeholder(Span(start: 0, end: 1))
+    func testDefinitionWithTypeAnnotationEquality() {
+        let ann = Expr.name("u32", s0)
+        let a = Definition(label: "x", typeAnnotation: ann, value: .integerLiteral("1", s0), span: s0)
+        let b = Definition(label: "x", typeAnnotation: ann, value: .integerLiteral("1", s0), span: s0)
         XCTAssertEqual(a, b)
     }
 
-    func testItemPlaceholderInequality() {
-        let a = Item.placeholder(Span(start: 0, end: 1))
-        let b = Item.placeholder(Span(start: 2, end: 3))
+    func testDefinitionWithAndWithoutTypeAnnotation() {
+        let ann = Expr.name("u32", s0)
+        let a = Definition(label: "x", typeAnnotation: ann, value: .integerLiteral("1", s0), span: s0)
+        let b = Definition(label: "x", typeAnnotation: nil, value: .integerLiteral("1", s0), span: s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Expr
+
+    func testExprIntegerLiteralEquality() {
+        let a = Expr.integerLiteral("42", s0)
+        let b = Expr.integerLiteral("42", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprFloatLiteralEquality() {
+        let a = Expr.floatLiteral("3.14", s0)
+        let b = Expr.floatLiteral("3.14", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprStringLiteralEquality() {
+        let a = Expr.stringLiteral("hi", s0)
+        let b = Expr.stringLiteral("hi", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprNameEquality() {
+        let a = Expr.name("foo", s0)
+        let b = Expr.name("foo", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprDiscardEquality() {
+        let a = Expr.discard(s0)
+        let b = Expr.discard(s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprUnitEquality() {
+        let a = Expr.unit(s0)
+        let b = Expr.unit(s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testExprDifferentKindsNotEqual() {
+        let a = Expr.integerLiteral("0", s0)
+        let b = Expr.floatLiteral("0", s0)
         XCTAssertNotEqual(a, b)
     }
 }
