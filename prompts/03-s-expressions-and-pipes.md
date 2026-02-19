@@ -77,10 +77,10 @@ A clause may begin with a pipe, which means the implicit input `x` of the enclos
 
 ```we
 uniform: (
-  | add [x, 1]
+  | add 1
   | increment
 )
-# `| add [x, 1]` — leading pipe, so x is threaded from the function's argument
+# `| add 1` — leading pipe, so x is threaded from the function's argument
 ```
 
 ### Lambda with Named Parameter (Closure Clarity)
@@ -111,13 +111,29 @@ transform: (it: it | double | increment)
 
 ```
 Sources/WeLangLib/
-    AST.swift        ← add Expr cases for application and pipe
+    AST.swift        ← add Expr cases for application and pipe; update span computed property
     Parser.swift     ← extend expression parsing
     Errors.swift     ← add any needed parse errors
 Tests/WeLangTests/
     ASTTests.swift   ← tests for new AST nodes
     ParserTests.swift ← comprehensive tests
+    ErrorsTests.swift ← tests for new ParseError cases
+    CompileTests.swift ← end-to-end compile tests for new syntax
 ```
+
+### Current Definition Struct (from Phase 2)
+
+```swift
+public struct Definition: Equatable {
+    public let label: String
+    /// Optional type annotation between the label and the colon.
+    public let typeAnnotation: Expr?
+    public let value: Expr
+    public let span: Span
+}
+```
+
+Note: definitions use `label type: value` syntax (e.g. `anInt u32: 23`). The `label:` pattern inside parentheses is **not** a definition — it is a lambda (see "Lambda disambiguation" below).
 
 ### Current Expr Enum (from Phase 2)
 
@@ -158,39 +174,58 @@ public indirect enum Expr: Equatable {
 }
 ```
 
+### Updating `Expr.span`
+
+The existing `Expr` enum has a computed `span` property that switches exhaustively over all cases. Adding `.apply`, `.pipe`, and `.lambda` **will cause a compile error** unless this property is updated to handle the new cases:
+
+```swift
+public var span: Span {
+    switch self {
+    // ... existing cases ...
+    case .apply(_, _, let span),
+         .pipe(_, let span),
+         .lambda(_, _, let span):
+        return span
+    }
+}
+```
+
 ### Representation Strategy
 
-**Clauses**: Each clause in a pipe is itself an expression. A multi-token clause like `add 2` becomes `.apply(function: .name("add"), arguments: [.integerLiteral("2")])`. A single-token clause like `increment` is just `.name("increment")`.
+> In the examples below, `_` is a placeholder for `Span` values. Every `Expr` case carries a `Span`; they are elided here for readability.
+
+**Clauses**: Each clause in a pipe is itself an expression. A multi-token clause like `add 2` becomes `.apply(function: .name("add", _), arguments: [.integerLiteral("2", _)], _)`. A single-token clause like `increment` is just `.name("increment", _)`.
 
 **Pipes**: `(1 | add 2 | multiply 3)` becomes:
 ```
 .pipe(clauses: [
     .integerLiteral("1", _),
-    .apply(function: .name("add"), arguments: [.integerLiteral("2", _)], _),
-    .apply(function: .name("multiply"), arguments: [.integerLiteral("3", _)], _)
+    .apply(function: .name("add", _), arguments: [.integerLiteral("2", _)], _),
+    .apply(function: .name("multiply", _), arguments: [.integerLiteral("3", _)], _)
 ], _)
 ```
 
 **Nested S-expressions**: `(add (multiply 2 3) 4)` becomes:
 ```
 .apply(
-    function: .name("add"),
+    function: .name("add", _),
     arguments: [
-        .apply(function: .name("multiply"), arguments: [.integerLiteral("2"), .integerLiteral("3")]),
-        .integerLiteral("4")
-    ]
+        .apply(function: .name("multiply", _), arguments: [.integerLiteral("2", _), .integerLiteral("3", _)], _),
+        .integerLiteral("4", _)
+    ],
+    _
 )
 ```
 
-**Single-element parens**: `(x)` is just the inner expression — no wrapping apply. It's `.name("x")`.
+**Single-element parens**: `(x)` is just the inner expression — no wrapping apply. It's `.name("x", _)`.
 
-**Leading pipe**: `(| add 1 | increment)` — the parser should generate a `.pipe` whose first clause is the implicit input. Represent this as a pipe where the first clause is a special sentinel. Use `.name("x", span)` as the implicit first clause, since the leading pipe means "take the function's implicit input."
+**Leading pipe**: `(| add 1 | increment)` — the parser should generate a `.pipe` whose first clause is the implicit input. Represent this as a pipe where the first clause is a special sentinel. Use `.name("x", _)` as the implicit first clause, since the leading pipe means "take the function's implicit input."
 
 **Lambda with named parameter**: `(it: do it)` becomes:
 ```
 .lambda(
     param: "it",
-    body: .apply(function: .name("do"), arguments: [.name("it")]),
+    body: .apply(function: .name("do", _), arguments: [.name("it", _)], _),
     _
 )
 ```
@@ -199,7 +234,7 @@ The body of a lambda is parsed using the same `PipeExpr` rule — it can contain
 
 ```
 (it: it | double | increment)
-→ .lambda(param: "it", body: .pipe([.name("it"), .name("double"), .name("increment")]), _)
+→ .lambda(param: "it", body: .pipe(clauses: [.name("it", _), .name("double", _), .name("increment", _)], _), _)
 ```
 
 ## Parsing Rules
@@ -210,7 +245,10 @@ Extend the expression parser to handle parenthesized expressions:
 
 ```
 Expr = Atom
-     | "(" PipeExpr ")"
+     | "(" ")"                          # unit
+     | "(" Label ":" PipeExpr ")"       # lambda with named parameter
+     | "(" "|" Clause ("|" Clause)* ")" # leading pipe (implicit x)
+     | "(" PipeExpr ")"                 # s-expression / pipe
 
 PipeExpr = Clause ("|" Clause)*
 
@@ -289,23 +327,25 @@ Add to `ParseError` if not already present:
 
 ### Parser Tests
 
+> In the expected values below, `_` is a placeholder for `Span` values which should be verified against actual byte positions.
+
 **Basic S-expressions:**
-- `testParseSingleElementParen`: `"id: (x)"` → definition with `.name("x")`
-- `testParseUnitExpr`: `"u: ()"` → definition with `.unit`
-- `testParseApplyOneArg`: `"r: (increment 1)"` → `.apply(.name("increment"), [.integerLiteral("1")])`
-- `testParseApplyTwoArgs`: `"r: (add 1 2)"` → `.apply(.name("add"), [.integerLiteral("1"), .integerLiteral("2")])`
+- `testParseSingleElementParen`: `"id: (x)"` → definition with `.name("x", _)`
+- `testParseUnitExpr`: `"u: ()"` → definition with `.unit(_)`
+- `testParseApplyOneArg`: `"r: (increment 1)"` → `.apply(function: .name("increment", _), arguments: [.integerLiteral("1", _)], _)`
+- `testParseApplyTwoArgs`: `"r: (add 1 2)"` → `.apply(function: .name("add", _), arguments: [.integerLiteral("1", _), .integerLiteral("2", _)], _)`
 
 **Nested S-expressions:**
 - `testParseNestedApply`: `"r: (add (multiply 2 3) 4)"` → nested `.apply`
 - `testParseDeeplyNested`: `"r: (f (g (h 1)))"` → three levels of nesting
 
 **Pipe expressions:**
-- `testParsePipeTwoClauses`: `"r: (1 | increment)"` → `.pipe([.integerLiteral("1"), .name("increment")])`
+- `testParsePipeTwoClauses`: `"r: (1 | increment)"` → `.pipe(clauses: [.integerLiteral("1", _), .name("increment", _)], _)`
 - `testParsePipeThreeClauses`: `"r: (1 | add 2 | multiply 3)"` → three-element pipe
 - `testParsePipeSingleTokenClauses`: `"r: (1 | 2 | 3)"` → pipe of three literals
 
 **Leading pipe:**
-- `testParseLeadingPipe`: `"f: (| increment)"` → `.pipe([.name("x"), .name("increment")])`
+- `testParseLeadingPipe`: `"f: (| increment)"` → `.pipe(clauses: [.name("x", _), .name("increment", _)], _)`
 - `testParseLeadingPipeMultiple`: `"f: (| add 1 | double)"` → pipe with implicit x first
 
 **Multi-line expressions:**
@@ -330,11 +370,11 @@ Add to `ParseError` if not already present:
 
 **Mixed:**
 - `testParseMixedPrefixPostfix`: `"r: (1 | 3 2 | 6 5 4)"` → correct pipe with apply clauses
-- `testParseNumberAsFunction`: `"r: (3 2 1)"` → `.apply(.integerLiteral("3"), [.integerLiteral("2"), .integerLiteral("1")])`
+- `testParseNumberAsFunction`: `"r: (3 2 1)"` → `.apply(function: .integerLiteral("3", _), arguments: [.integerLiteral("2", _), .integerLiteral("1", _)], _)`
 
 **Lambda with named parameter:**
-- `testParseLambdaSimple`: `"f: (it: it)"` → `.lambda(param: "it", body: .name("it"))`
-- `testParseLambdaWithApply`: `"f: (it: do it)"` → `.lambda(param: "it", body: .apply(.name("do"), [.name("it")]))`
+- `testParseLambdaSimple`: `"f: (it: it)"` → `.lambda(param: "it", body: .name("it", _), _)`
+- `testParseLambdaWithApply`: `"f: (it: do it)"` → `.lambda(param: "it", body: .apply(function: .name("do", _), arguments: [.name("it", _)], _), _)`
 - `testParseLambdaWithPipe`: `"f: (it: it | double | increment)"` → lambda whose body is a pipe
 - `testParseLambdaAsArgument`: `"r: (something (it: do it) x)"` → lambda nested as argument in apply
 - `testParseLambdaNestedInPipe`: `"r: (data | (item: transform item))"` → lambda as a pipe clause
