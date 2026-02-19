@@ -207,7 +207,7 @@ Skip leading newlines, then parse definitions separated by newlines. Trailing ne
 
 ```
 Definition = Label TypeAnnotation? ":" Expr
-TypeAnnotation = Label | "'" TypeExpr | "*" TypeExpr    (in this phase, only bare Label is implemented)
+TypeAnnotation = Label | "'" TypeExpr    (in this phase, only bare Label is implemented)
 ```
 
 The current token must be `.label`. Consume it. Then:
@@ -215,11 +215,11 @@ The current token must be `.label`. Consume it. Then:
 - If the next token can start a type annotation: parse the type annotation as an expression, then expect `.colon`, then parse the value expression.
 - Otherwise: throw `ParseError.expectedColon`.
 
-A type annotation is either a **label** that names a type (structural or nominal, e.g., `u32`) or a **structural type literal** starting with `.tick` (`'`), e.g., `'(u32|string)`. In this phase, only bare labels are implemented; `.tick`-prefixed structural types are added in Phase 6, along with `.star`-prefixed nominal types (e.g., `*u32`).
+A type annotation is either a **label** that names a type (e.g., `u32`) or a **structural type literal** starting with `.tick` (`'`), e.g., `'(u32|string)`. Nominal types (`*foo`) are not valid here — they are references back to the label that defined them, so an anonymous nominal type in this position would be unreachable. In this phase, only bare labels are implemented; `.tick`-prefixed structural types are added in Phase 6.
 
-This handles both `zero: 0` and `anInt u32: 23`. The disambiguation is unambiguous: after a label, `:` means "start the value"; a token that can begin a type expression (`.label`, `.tick`, or `.star`) starts the type annotation before the colon.
+This handles both `zero: 0` and `anInt u32: 23`. The disambiguation is unambiguous: after a label, `:` means "start the value"; a token that can begin a type expression (`.label` or `.tick`) starts the type annotation before the colon.
 
-**Lookahead strategy**: After the first label, peek at the next token. If it is `.colon`, proceed with no type annotation. If it can start a type annotation — in this phase only `.label`; in Phase 6 also `.tick` and `.star` — parse the type annotation, then expect `.colon`. If the next token is none of these, throw `ParseError.expectedColon`.
+**Lookahead strategy**: After the first label, peek at the next token. If it is `.colon`, proceed with no type annotation. If it can start a type annotation — in this phase only `.label`; in Phase 6 also `.tick` — parse the type annotation, then expect `.colon`. If the next token is none of these, throw `ParseError.expectedColon`.
 
 #### Expr (for this phase)
 
