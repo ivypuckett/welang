@@ -40,6 +40,16 @@ final class ErrorsTests: XCTestCase {
         XCTAssertTrue(err.description.contains("unexpected token"))
     }
 
+    func testParseErrorExpectedClosingParenDisplay() {
+        let err = ParseError.expectedClosingParen(span: Span(start: 5, end: 6))
+        XCTAssertTrue(err.description.contains("')'"))
+    }
+
+    func testParseErrorEmptyClauseDisplay() {
+        let err = ParseError.emptyClause(span: Span(start: 3, end: 4))
+        XCTAssertTrue(err.description.contains("empty clause"))
+    }
+
     func testCodegenErrorDisplay() {
         let err = CodegenError.llvmError(message: "bad IR")
         XCTAssertEqual(err.description, "LLVM error: bad IR")

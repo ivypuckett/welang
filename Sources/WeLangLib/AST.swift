@@ -51,6 +51,21 @@ public indirect enum Expr: Equatable {
     /// Unit value: `()`
     case unit(Span)
 
+    /// S-expression application: `(f arg1 arg2)`
+    /// The function is the first element, arguments follow.
+    /// `(add 1 2)` → .apply(func: .name("add"), args: [.integerLiteral("1"), .integerLiteral("2")])
+    case apply(function: Expr, arguments: [Expr], Span)
+
+    /// Pipe expression: `(a | f | g)`
+    /// A chain of clauses where each clause receives the output of the previous.
+    /// The `clauses` array has at least 2 elements.
+    case pipe(clauses: [Expr], Span)
+
+    /// Lambda with named parameter: `(it: body)`
+    /// Renames the implicit `x` to a custom name for clarity in closures.
+    /// `(it: do it)` → .lambda(param: "it", body: .apply(.name("do"), [.name("it")]))
+    case lambda(param: String, body: Expr, Span)
+
     /// The source span for this expression node.
     public var span: Span {
         switch self {
@@ -61,6 +76,10 @@ public indirect enum Expr: Equatable {
              .name(_, let span),
              .discard(let span),
              .unit(let span):
+            return span
+        case .apply(_, _, let span),
+             .pipe(_, let span),
+             .lambda(_, _, let span):
             return span
         }
     }
