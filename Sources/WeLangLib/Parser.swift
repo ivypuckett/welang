@@ -12,36 +12,39 @@ struct Parser {
 
     /// Peek at the current token without consuming it.
     func peek() -> Token {
-        if pos < tokens.count {
-            return tokens[pos]
+        guard pos < tokens.count else {
+            let endPos = tokens.last?.span.end ?? 0
+            return Token(kind: .eof, span: Span(start: endPos, end: endPos))
         }
-        let endPos = tokens.last?.span.end ?? 0
-        return Token(kind: .eof, span: Span(start: endPos, end: endPos))
+        return tokens[pos]
     }
 
     /// Consume the current token and advance.
     @discardableResult
     mutating func advance() -> Token {
         let token = peek()
-        if pos < tokens.count {
-            pos += 1
-        }
+        if pos < tokens.count { pos += 1 }
         return token
+    }
+
+    /// If the current token matches `kind`, consume and return it; otherwise return nil.
+    @discardableResult
+    mutating func match(_ kind: TokenKind) -> Token? {
+        guard peek().kind == kind else { return nil }
+        return advance()
     }
 
     /// Consume a token of the expected kind, or throw `unexpectedToken`.
     @discardableResult
     mutating func expect(_ kind: TokenKind) throws -> Token {
-        let token = peek()
-        guard token.kind == kind else {
-            throw ParseError.unexpectedToken(span: token.span)
-        }
-        return advance()
+        if let token = match(kind) { return token }
+        throw ParseError.unexpectedToken(span: peek().span)
     }
 
-    /// Check if the current token matches a kind (by value equality).
-    func check(_ kind: TokenKind) -> Bool {
-        return peek().kind == kind
+    /// If the current token is a `.label`, consume it and return `(text, token)`.
+    mutating func matchLabel() -> (String, Token)? {
+        guard case .label(let text) = peek().kind else { return nil }
+        return (text, advance())
     }
 
     /// Skip any newline tokens.
@@ -49,14 +52,6 @@ struct Parser {
         while case .newline = peek().kind {
             advance()
         }
-    }
-
-    /// Returns the label text if the current token is `.label`, else nil.
-    func checkLabel() -> String? {
-        if case .label(let text) = peek().kind {
-            return text
-        }
-        return nil
     }
 }
 
@@ -66,45 +61,37 @@ extension Parser {
 
     // MARK: Program
 
+    /// Program = Definition* EOF
     mutating func parseProgram() throws -> Program {
         var definitions: [Definition] = []
-
-        while true {
+        skipNewlines()
+        while peek().kind != .eof {
+            definitions.append(try parseDefinition())
             skipNewlines()
-            if check(.eof) { break }
-            let def = try parseDefinition()
-            definitions.append(def)
         }
-
         return Program(definitions: definitions)
     }
 
     // MARK: Definition
 
+    /// Definition = Label TypeAnnotation? ":" Expr
     mutating func parseDefinition() throws -> Definition {
-        let startToken = peek()
-
-        // Definitions must begin with a label.
-        guard let labelText = checkLabel() else {
-            throw ParseError.expectedDefinition(span: startToken.span)
+        guard let (labelText, labelToken) = matchLabel() else {
+            throw ParseError.expectedDefinition(span: peek().span)
         }
-        advance() // consume the definition label
 
         skipNewlines()
 
-        // Disambiguate: colon means no type annotation; another label means type annotation.
+        // Disambiguate: colon → no type annotation; label → type annotation.
         let typeAnnotation: Expr?
-        if check(.colon) {
+        if match(.colon) != nil {
             typeAnnotation = nil
-            advance() // consume ':'
-        } else if let typeName = checkLabel() {
-            let typeToken = advance() // consume the type label
+        } else if let (typeName, typeToken) = matchLabel() {
             typeAnnotation = .name(typeName, typeToken.span)
             skipNewlines()
-            guard check(.colon) else {
+            guard match(.colon) != nil else {
                 throw ParseError.expectedColon(span: peek().span)
             }
-            advance() // consume ':'
         } else {
             throw ParseError.expectedColon(span: peek().span)
         }
@@ -112,13 +99,18 @@ extension Parser {
         skipNewlines()
 
         let value = try parseExpr()
-        let span = Span(start: startToken.span.start, end: spanOf(value).end)
-
-        return Definition(label: labelText, typeAnnotation: typeAnnotation, value: value, span: span)
+        return Definition(
+            label: labelText,
+            typeAnnotation: typeAnnotation,
+            value: value,
+            span: Span(start: labelToken.span.start, end: value.span.end)
+        )
     }
 
     // MARK: Expr
 
+    /// Expr = IntegerLiteral | FloatLiteral | StringLiteral
+    ///      | InterpolatedStringLiteral | Label | "_" | "()"
     mutating func parseExpr() throws -> Expr {
         let token = peek()
 
@@ -148,33 +140,23 @@ extension Parser {
             return .discard(token.span)
 
         case .leftParen:
-            advance() // consume '('
-            skipNewlines()
-            let next = peek()
-            if case .rightParen = next.kind {
-                let closeToken = advance()
-                return .unit(Span(start: token.span.start, end: closeToken.span.end))
-            }
-            // Non-empty parens are not supported in this phase.
-            throw ParseError.unexpectedToken(span: next.span)
+            return try parseUnit()
 
         default:
             throw ParseError.expectedExpression(span: token.span)
         }
     }
 
-    // MARK: Helpers
+    // MARK: Unit
 
-    /// Extract the span from any `Expr` node.
-    func spanOf(_ expr: Expr) -> Span {
-        switch expr {
-        case .integerLiteral(_, let span): return span
-        case .floatLiteral(_, let span):   return span
-        case .stringLiteral(_, let span):  return span
-        case .interpolatedStringLiteral(_, let span): return span
-        case .name(_, let span):           return span
-        case .discard(let span):           return span
-        case .unit(let span):              return span
+    /// Parses `()` as a unit expression.
+    private mutating func parseUnit() throws -> Expr {
+        let open = advance() // consume '(' — caller already verified
+        skipNewlines()
+        guard let close = match(.rightParen) else {
+            // Non-empty parens are not supported in this phase.
+            throw ParseError.unexpectedToken(span: peek().span)
         }
+        return .unit(Span(start: open.span.start, end: close.span.end))
     }
 }

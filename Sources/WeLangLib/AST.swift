@@ -50,4 +50,18 @@ public indirect enum Expr: Equatable {
 
     /// Unit value: `()`
     case unit(Span)
+
+    /// The source span for this expression node.
+    public var span: Span {
+        switch self {
+        case .integerLiteral(_, let span),
+             .floatLiteral(_, let span),
+             .stringLiteral(_, let span),
+             .interpolatedStringLiteral(_, let span),
+             .name(_, let span),
+             .discard(let span),
+             .unit(let span):
+            return span
+        }
+    }
 }
