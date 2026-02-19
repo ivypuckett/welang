@@ -5,7 +5,7 @@ import CLLLVM
 final class CodegenTests: XCTestCase {
 
     func testGenerateEmptyProgram() throws {
-        let program = Program(items: [])
+        let program = Program(definitions: [])
         XCTAssertNoThrow(try generate(program))
     }
 

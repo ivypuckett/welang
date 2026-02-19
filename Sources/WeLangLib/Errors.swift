@@ -57,11 +57,20 @@ public enum LexError: Error, Equatable, CustomStringConvertible {
 
 public enum ParseError: Error, Equatable, CustomStringConvertible {
     case unexpectedToken(span: Span)
+    case expectedColon(span: Span)
+    case expectedExpression(span: Span)
+    case expectedDefinition(span: Span)
 
     public var description: String {
         switch self {
         case .unexpectedToken(let span):
             return "unexpected token at \(span)"
+        case .expectedColon(let span):
+            return "expected ':' at \(span)"
+        case .expectedExpression(let span):
+            return "expected expression at \(span)"
+        case .expectedDefinition(let span):
+            return "expected definition at \(span)"
         }
     }
 }
