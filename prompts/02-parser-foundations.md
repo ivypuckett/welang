@@ -58,6 +58,14 @@ public enum TokenKind: Equatable {
     case floatLiteral(String)
     case stringLiteral(String)
     case interpolatedStringLiteral(String)
+
+    // Interpolated string structure tokens (emitted starting Phase 5)
+    case interpStart
+    case stringSegment(String)
+    case interpExprOpen
+    case interpExprClose
+    case interpEnd
+
     case label(String)
     case discard
     case colon
@@ -74,6 +82,8 @@ public enum TokenKind: Equatable {
     case eof
 }
 ```
+
+The interpolation tokens are not used in this phase, but they exist in `TokenKind` and must be handled (or ignored via a default case) in any exhaustive switch.
 
 ### Current AST (to be replaced)
 
@@ -245,6 +255,19 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
     case expectedColon(span: Span)
     case expectedExpression(span: Span)
     case expectedDefinition(span: Span)
+
+    public var description: String {
+        switch self {
+        case .unexpectedToken(let span):
+            return "unexpected token at \(span)"
+        case .expectedColon(let span):
+            return "expected ':' at \(span)"
+        case .expectedExpression(let span):
+            return "expected expression at \(span)"
+        case .expectedDefinition(let span):
+            return "expected definition at \(span)"
+        }
+    }
 }
 ```
 
@@ -254,6 +277,8 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
 - `expectedDefinition`: when a top-level form is not a definition
 
 ## Updating Downstream Code
+
+**Important**: Changing `Program.items` to `Program.definitions` is a compile-breaking change. The AST change, codegen update, and test updates below must all be done atomically — the project will not compile if any reference to `Program.items` or `Item.placeholder` remains.
 
 ### `Codegen.swift`
 
@@ -269,6 +294,10 @@ public func generate(_ program: Program) throws {
 ### `Compile.swift`
 
 No changes needed — it already calls `lex → parse → generate`.
+
+### Existing tests
+
+`CodegenTests.swift` and `CompileTests.swift` both reference `Program(items: [])`. These must be updated to `Program(definitions: [])` in the same step as the AST change, or they will fail to compile.
 
 ## Tests to Write
 
@@ -318,7 +347,8 @@ Replace existing placeholder tests with:
 
 **Error Cases:**
 - `testParseMissingColon`: `"foo 0"` → throws `ParseError.expectedColon`
-- `testParseMissingValue`: `"foo:"` followed by newline/eof → throws `ParseError.expectedExpression`
+- `testParseMissingValueEof`: `"foo:"` (followed by eof) → throws `ParseError.expectedExpression`
+- `testParseMissingValueNewline`: `"foo:\n"` (followed by newline) → throws `ParseError.expectedExpression`
 - `testParseBareExpression`: `"42"` at top level → throws `ParseError.expectedDefinition`
 
 **Edge Cases:**
