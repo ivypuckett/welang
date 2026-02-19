@@ -138,6 +138,27 @@ phases:
 | Codegen | Correct LLVM IR is emitted; round-trip via JIT if possible |
 | Compile | End-to-end: source string → successful compilation    |
 
+## Language Design Principles
+
+- **Whitespace independence.** welang is entirely whitespace-independent at
+  the parser level. Newlines are treated the same as spaces — they carry no
+  syntactic meaning. The parser calls `skipNewlines()` at every transition
+  point. The only role of whitespace is separating adjacent tokens that
+  would otherwise merge (e.g., `anInt u32`), which is handled by the lexer,
+  not the parser. All of the following are equivalent:
+  ```we
+  foo: 0
+  ```
+  ```we
+  foo:
+  0
+  ```
+  ```we
+  foo
+  :
+  0
+  ```
+
 ## Code Style
 
 - Follow Swift API Design Guidelines.

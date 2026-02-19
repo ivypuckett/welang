@@ -58,6 +58,14 @@ public enum TokenKind: Equatable {
     case floatLiteral(String)
     case stringLiteral(String)
     case interpolatedStringLiteral(String)
+
+    // Interpolated string structure tokens (emitted starting Phase 5)
+    case interpStart
+    case stringSegment(String)
+    case interpExprOpen
+    case interpExprClose
+    case interpEnd
+
     case label(String)
     case discard
     case colon
@@ -74,6 +82,8 @@ public enum TokenKind: Equatable {
     case eof
 }
 ```
+
+The interpolation tokens are not used in this phase, but they exist in `TokenKind` and must be handled (or ignored via a default case) in any exhaustive switch.
 
 ### Current AST (to be replaced)
 
@@ -198,25 +208,30 @@ func checkInteger() -> String? // returns the text if current token is .integerL
 #### Program
 
 ```
-Program = (Newline)* (Definition (Newline)*)* EOF
+Program = Definition* EOF
 ```
 
-Skip leading newlines, then parse definitions separated by newlines. Trailing newlines are allowed.
+Call `skipNewlines()` before each attempt to parse a definition (and before checking for EOF). Newlines are not separators — they are whitespace, freely ignored throughout the parser.
 
 #### Definition
 
 ```
 Definition = Label TypeAnnotation? ":" Expr
-TypeAnnotation = Expr    (in this phase, only a bare Label is supported)
+TypeAnnotation = Label | "'" TypeExpr    (in this phase, only bare Label is implemented)
 ```
 
-The current token must be `.label`. Consume it. Then:
-- If the next token is `.colon`: no type annotation — consume `:` and parse the value expression.
-- If the next token is **not** `.colon`: parse the type annotation as an expression (in this phase, only a label is expected — e.g., `u32`), then expect `.colon`, then parse the value expression.
+The current token must be `.label`. Consume it. Then call `skipNewlines()` and:
+- If the next token is `.colon`: no type annotation — consume `:`, call `skipNewlines()`, and parse the value expression.
+- If the next token can start a type annotation: parse the type annotation as an expression, call `skipNewlines()`, then expect `.colon`, call `skipNewlines()`, then parse the value expression.
+- Otherwise: throw `ParseError.expectedColon`.
 
-This handles both `zero: 0` and `anInt u32: 23`. The disambiguation is unambiguous: after a label, `:` means "start the value"; anything else is the type annotation before the co`:`.
+`skipNewlines()` is called at every transition point within a definition. welang is whitespace-independent — newlines are freely allowed between a label, its type annotation, the colon, and the value expression.
 
-**Lookahead strategy**: After the first label, peek at the next token. If it is `.colon`, proceed with no type annotation. If it is `.label` (and the token after *that* is `.colon`), consume the type label. In Phase 6, this will be upgraded to handle `*`, `'`, and compound type expressions.
+A type annotation is either a **label** that names a type (e.g., `u32`) or a **structural type literal** starting with `.tick` (`'`), e.g., `'(u32|string)`. Nominal types (`*foo`) are not valid here — they are references back to the label that defined them, so an anonymous nominal type in this position would be unreachable. In this phase, only bare labels are implemented; `.tick`-prefixed structural types are added in Phase 6.
+
+This handles both `zero: 0` and `anInt u32: 23`. The disambiguation is unambiguous: after a label, `:` means "start the value"; a token that can begin a type expression (`.label` or `.tick`) starts the type annotation before the colon.
+
+**Lookahead strategy**: After the first label, call `skipNewlines()` and peek at the next token. If it is `.colon`, proceed with no type annotation. If it can start a type annotation — in this phase only `.label`; in Phase 6 also `.tick` — parse the type annotation, then `skipNewlines()`, then expect `.colon`. If the next token is none of these, throw `ParseError.expectedColon`.
 
 #### Expr (for this phase)
 
@@ -230,7 +245,7 @@ Expr = IntegerLiteral
      | "(" ")"         → Expr.unit
 ```
 
-The unit case `()` must check for an immediate `.rightParen` after `.leftParen`. If there is content between the parens, that is an s-expression (Phase 3) — for now, throw a `ParseError` for any non-empty parenthesized expression.
+The unit case `()` consumes `.leftParen`, calls `skipNewlines()`, then checks for `.rightParen`. If there is content between the parens, that is an s-expression (Phase 3) — for now, throw a `ParseError` for any non-empty parenthesized expression.
 
 ### Error Handling
 
@@ -242,6 +257,19 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
     case expectedColon(span: Span)
     case expectedExpression(span: Span)
     case expectedDefinition(span: Span)
+
+    public var description: String {
+        switch self {
+        case .unexpectedToken(let span):
+            return "unexpected token at \(span)"
+        case .expectedColon(let span):
+            return "expected ':' at \(span)"
+        case .expectedExpression(let span):
+            return "expected expression at \(span)"
+        case .expectedDefinition(let span):
+            return "expected definition at \(span)"
+        }
+    }
 }
 ```
 
@@ -251,6 +279,8 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
 - `expectedDefinition`: when a top-level form is not a definition
 
 ## Updating Downstream Code
+
+**Important**: Changing `Program.items` to `Program.definitions` is a compile-breaking change. The AST change, codegen update, and test updates below must all be done atomically — the project will not compile if any reference to `Program.items` or `Item.placeholder` remains.
 
 ### `Codegen.swift`
 
@@ -266,6 +296,10 @@ public func generate(_ program: Program) throws {
 ### `Compile.swift`
 
 No changes needed — it already calls `lex → parse → generate`.
+
+### Existing tests
+
+`CodegenTests.swift` and `CompileTests.swift` both reference `Program(items: [])`. These must be updated to `Program(definitions: [])` in the same step as the AST change, or they will fail to compile.
 
 ## Tests to Write
 
@@ -312,11 +346,18 @@ Replace existing placeholder tests with:
 **Multiple Definitions:**
 - `testParseMultipleDefinitions`: parse two definitions separated by newline
 - `testParseMultipleDefinitionsWithBlankLines`: blank lines between definitions
+- `testParseMultipleDefinitionsSameLine`: `"foo: 1 bar: 2"` → two definitions (no newline needed between definitions)
 
 **Error Cases:**
 - `testParseMissingColon`: `"foo 0"` → throws `ParseError.expectedColon`
-- `testParseMissingValue`: `"foo:"` followed by newline/eof → throws `ParseError.expectedExpression`
+- `testParseMissingValueEof`: `"foo:"` (followed by eof) → throws `ParseError.expectedExpression`
+- `testParseMissingValueNewline`: `"foo:\n"` (followed by newline) → throws `ParseError.expectedExpression`
 - `testParseBareExpression`: `"42"` at top level → throws `ParseError.expectedDefinition`
+
+**Whitespace Independence:**
+- `testParseDefinitionValueOnNextLine`: `"foo:\n0"` → one definition with `.integerLiteral("0", _)`
+- `testParseDefinitionSpreadAcrossLines`: `"foo\n:\n0"` → one definition (label, colon, and value all on separate lines)
+- `testParseTypedDefinitionAcrossLines`: `"anInt\nu32\n:\n23"` → definition with type annotation
 
 **Edge Cases:**
 - `testParseEmptySource`: `""` → empty program (0 definitions)
@@ -343,7 +384,20 @@ Replace existing placeholder tests with:
 
 ## Important Notes
 
-- The parser should be **newline-aware**: definitions are separated by newlines (one or more). Newlines within a definition (e.g., between `label:` and the value) are not yet relevant — for now, assume definitions are single-line. Multi-line expressions come in Phase 3.
+- **welang is whitespace-independent.** Newlines are not significant — they are treated the same as spaces. The parser should call `skipNewlines()` at every transition point (before parsing a definition, after a colon, between a label and type annotation, etc.). All of the following are equivalent:
+  ```we
+  foo: 0
+  ```
+  ```we
+  foo:
+  0
+  ```
+  ```we
+  foo
+  :
+  0
+  ```
+  The only place whitespace matters is separating adjacent tokens that would otherwise merge (e.g., a label and a type annotation need at least one whitespace character between them, but this is handled by the lexer, not the parser).
 - The `Expr` enum is `indirect` to allow recursive nesting in future phases.
 - Keep all types `public` so tests can access them.
 - Run `swift test` before considering this phase complete.
