@@ -53,7 +53,7 @@ public indirect enum Expr: Equatable {
 
     /// S-expression application: `(f arg1 arg2)`
     /// The function is the first element, arguments follow.
-    /// `(add 1 2)` → .apply(func: .name("add"), args: [.integerLiteral("1"), .integerLiteral("2")])
+    /// `(add 1 2)` → .apply(function: .name("add"), arguments: [.integerLiteral("1"), .integerLiteral("2")])
     case apply(function: Expr, arguments: [Expr], Span)
 
     /// Pipe expression: `(a | f | g)`
