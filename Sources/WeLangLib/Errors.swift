@@ -60,6 +60,8 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
     case expectedColon(span: Span)
     case expectedExpression(span: Span)
     case expectedDefinition(span: Span)
+    case expectedClosingParen(span: Span)
+    case emptyClause(span: Span)
 
     public var description: String {
         switch self {
@@ -71,6 +73,10 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
             return "expected expression at \(span)"
         case .expectedDefinition(let span):
             return "expected definition at \(span)"
+        case .expectedClosingParen(let span):
+            return "expected ')' at \(span)"
+        case .emptyClause(let span):
+            return "empty clause at \(span)"
         }
     }
 }

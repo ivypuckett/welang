@@ -77,4 +77,66 @@ final class ASTTests: XCTestCase {
         let b = Expr.floatLiteral("0", s0)
         XCTAssertNotEqual(a, b)
     }
+
+    // MARK: - Apply
+
+    func testApplyEquality() {
+        let a = Expr.apply(
+            function: .name("add", s0),
+            arguments: [.integerLiteral("1", s0), .integerLiteral("2", s0)],
+            s0
+        )
+        let b = Expr.apply(
+            function: .name("add", s0),
+            arguments: [.integerLiteral("1", s0), .integerLiteral("2", s0)],
+            s0
+        )
+        XCTAssertEqual(a, b)
+    }
+
+    func testApplyInequalityDifferentFunction() {
+        let a = Expr.apply(function: .name("add", s0), arguments: [.integerLiteral("1", s0)], s0)
+        let b = Expr.apply(function: .name("sub", s0), arguments: [.integerLiteral("1", s0)], s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    func testApplyInequalityDifferentArguments() {
+        let a = Expr.apply(function: .name("f", s0), arguments: [.integerLiteral("1", s0)], s0)
+        let b = Expr.apply(function: .name("f", s0), arguments: [.integerLiteral("2", s0)], s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Pipe
+
+    func testPipeEquality() {
+        let a = Expr.pipe(clauses: [.integerLiteral("1", s0), .name("inc", s0)], s0)
+        let b = Expr.pipe(clauses: [.integerLiteral("1", s0), .name("inc", s0)], s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testPipeInequalityDifferentClauses() {
+        let a = Expr.pipe(clauses: [.integerLiteral("1", s0), .name("inc", s0)], s0)
+        let b = Expr.pipe(clauses: [.integerLiteral("1", s0), .name("dec", s0)], s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Lambda
+
+    func testLambdaEquality() {
+        let a = Expr.lambda(param: "it", body: .name("it", s0), s0)
+        let b = Expr.lambda(param: "it", body: .name("it", s0), s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testLambdaInequalityDifferentParam() {
+        let a = Expr.lambda(param: "it", body: .name("it", s0), s0)
+        let b = Expr.lambda(param: "val", body: .name("val", s0), s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    func testLambdaInequalityDifferentBody() {
+        let a = Expr.lambda(param: "it", body: .name("it", s0), s0)
+        let b = Expr.lambda(param: "it", body: .integerLiteral("1", s0), s0)
+        XCTAssertNotEqual(a, b)
+    }
 }
