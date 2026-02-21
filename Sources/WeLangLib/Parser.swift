@@ -109,54 +109,136 @@ extension Parser {
 
     // MARK: Expr
 
-    /// Expr = IntegerLiteral | FloatLiteral | StringLiteral
-    ///      | InterpolatedStringLiteral | Label | "_" | "()"
+    /// Entry point for a definition value.
+    ///
+    /// At the definition level, exactly one atom or one grouped expression is
+    /// allowed. Application and pipe are only available inside parentheses,
+    /// which keeps the grammar unambiguous when multiple definitions appear
+    /// on the same line (`foo: 1 bar: 2`).
+    ///
+    ///     Expr = AtomExpr | GroupExpr
     mutating func parseExpr() throws -> Expr {
-        let token = peek()
+        switch peek().kind {
+        case .integerLiteral, .floatLiteral, .stringLiteral,
+             .interpolatedStringLiteral, .label, .discard:
+            return try parseAtomExpr()
+        case .leftParen:
+            return try parseGroupExpr()
+        default:
+            throw ParseError.expectedExpression(span: peek().span)
+        }
+    }
 
+    // MARK: Atom
+
+    /// Parses a single indivisible expression (no application, no pipe).
+    ///
+    ///     AtomExpr = IntegerLiteral | FloatLiteral | StringLiteral
+    ///              | InterpolatedStringLiteral | Label | "_"
+    private mutating func parseAtomExpr() throws -> Expr {
+        let token = peek()
         switch token.kind {
         case .integerLiteral(let text):
             advance()
             return .integerLiteral(text, token.span)
-
         case .floatLiteral(let text):
             advance()
             return .floatLiteral(text, token.span)
-
         case .stringLiteral(let text):
             advance()
             return .stringLiteral(text, token.span)
-
         case .interpolatedStringLiteral(let text):
             advance()
             return .interpolatedStringLiteral(text, token.span)
-
         case .label(let text):
             advance()
             return .name(text, token.span)
-
         case .discard:
             advance()
             return .discard(token.span)
-
-        case .leftParen:
-            return try parseUnit()
-
         default:
             throw ParseError.expectedExpression(span: token.span)
         }
     }
 
-    // MARK: Unit
+    // MARK: Group
 
-    /// Parses `()` as a unit expression.
-    private mutating func parseUnit() throws -> Expr {
-        let open = advance() // consume '(' — caller already verified
+    /// Parses a parenthesised expression.
+    ///
+    ///     GroupExpr = "(" ")"                  → unit
+    ///               | "(" PipeExpr ")"         → inner expression (parens transparent)
+    private mutating func parseGroupExpr() throws -> Expr {
+        let open = advance() // consume '('
         skipNewlines()
-        guard let close = match(.rightParen) else {
-            // Non-empty parens are not supported in this phase.
+        if let close = match(.rightParen) {
+            return .unit(Span(start: open.span.start, end: close.span.end))
+        }
+        let inner = try parsePipeExpr()
+        skipNewlines()
+        guard match(.rightParen) != nil else {
             throw ParseError.unexpectedToken(span: peek().span)
         }
-        return .unit(Span(start: open.span.start, end: close.span.end))
+        return inner
+    }
+
+    // MARK: Pipe
+
+    /// Parses a pipe expression (left-associative).
+    ///
+    ///     PipeExpr = AppExpr ("|" AppExpr)*
+    ///
+    /// `(A | B | C)` builds `pipe(pipe(A, B), C)`.
+    /// Data flows left-to-right: A is evaluated first, its result passes to B,
+    /// then to C — the same data-flow order as `(C B A)` written with
+    /// right-associative juxtaposition.
+    private mutating func parsePipeExpr() throws -> Expr {
+        var lhs = try parseAppExpr()
+        skipNewlines()
+        while match(.pipe) != nil {
+            skipNewlines()
+            let rhs = try parseAppExpr()
+            let span = Span(start: lhs.span.start, end: rhs.span.end)
+            lhs = .pipe(lhs, rhs, span)
+            skipNewlines()
+        }
+        return lhs
+    }
+
+    // MARK: Application
+
+    /// Parses a right-associative function application sequence.
+    ///
+    ///     AppExpr = AtomOrGroupExpr+
+    ///
+    /// `f g h` builds `application(f, application(g, h))`.
+    /// Data flows right-to-left mathematically: `h` is innermost.
+    private mutating func parseAppExpr() throws -> Expr {
+        let first = try parseAtomOrGroupExpr()
+        skipNewlines()
+        if canStartAtomOrGroup() {
+            let rest = try parseAppExpr()
+            let span = Span(start: first.span.start, end: rest.span.end)
+            return .application(first, rest, span)
+        }
+        return first
+    }
+
+    /// Parses one atom or a nested grouped expression.
+    private mutating func parseAtomOrGroupExpr() throws -> Expr {
+        if peek().kind == .leftParen {
+            return try parseGroupExpr()
+        }
+        return try parseAtomExpr()
+    }
+
+    /// Returns true if the current token can begin an atom or grouped expression.
+    private func canStartAtomOrGroup() -> Bool {
+        switch peek().kind {
+        case .integerLiteral, .floatLiteral, .stringLiteral,
+             .interpolatedStringLiteral, .label, .discard, .leftParen:
+            return true
+        default:
+            return false
+        }
     }
 }

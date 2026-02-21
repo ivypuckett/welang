@@ -51,6 +51,18 @@ public indirect enum Expr: Equatable {
     /// Unit value: `()`
     case unit(Span)
 
+    /// Function application by juxtaposition (right-associative, inside a group).
+    /// The first `Expr` is the function, the second is the argument.
+    /// `f g h` desugars to `application(f, application(g, h))`.
+    /// Data flows right-to-left: the rightmost expression is evaluated first.
+    case application(Expr, Expr, Span)
+
+    /// Pipe expression: feeds the output of the left expression into the right.
+    /// `(A | B)` means data flows through A then B.
+    /// Semantically equivalent to `application(B, A)`, but pipes compose
+    /// left-to-right so `(A | B | C)` = `pipe(pipe(A, B), C)`.
+    case pipe(Expr, Expr, Span)
+
     /// The source span for this expression node.
     public var span: Span {
         switch self {
@@ -60,7 +72,9 @@ public indirect enum Expr: Equatable {
              .interpolatedStringLiteral(_, let span),
              .name(_, let span),
              .discard(let span),
-             .unit(let span):
+             .unit(let span),
+             .application(_, _, let span),
+             .pipe(_, _, let span):
             return span
         }
     }
