@@ -14,4 +14,12 @@ final class CompileTests: XCTestCase {
     func testCompileMultipleDefinitions() {
         XCTAssertNoThrow(try compile("a: 1\nb: 2"))
     }
+
+    func testCompileSExpr() {
+        XCTAssertNoThrow(try compile("r: (add 1 2)"))
+    }
+
+    func testCompilePipeExpr() {
+        XCTAssertNoThrow(try compile("r: (1 | 2 | 3)"))
+    }
 }
