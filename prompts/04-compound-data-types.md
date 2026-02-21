@@ -49,9 +49,9 @@ Square-bracket literals `[]` define **collections** that are dynamically indexab
 
 ### Access Patterns
 
-- **Dot access** (`x.label`): compile-time field access on tuples/objects
+- **Dot access** (`x.label`): compile-time label field access on tuples/objects — labels only, since they are statically known
 - **Bracket access** (`x[0]`, `x["key"]`): runtime index access on arrays/maps
-- **Computed access** (`x.[ expr ]`): the expression inside `.[]` is evaluated to produce the key
+- **Computed access** (`x.[ expr ]`): the expression inside `.[]` is evaluated at runtime to produce the key; use this form whenever the key is non-deterministic or non-label — including integer indices (`x.[0]`) and string keys (`x.["name"]`)
 
 ## Project Context
 
@@ -80,6 +80,7 @@ public indirect enum Expr: Equatable {
     case unit(Span)
     case apply(function: Expr, arguments: [Expr], Span)
     case pipe(clauses: [Expr], Span)
+    case lambda(param: String, body: Expr, Span)
 }
 ```
 
@@ -133,7 +134,7 @@ public indirect enum Expr: Equatable {
     /// Array/map literal: `[12, 24]`, `[key: 12]`, `["k": 1]`
     case array(entries: [CompoundEntry], Span)
 
-    /// Dot access on a tuple/object: `x.label`, `x.0`
+    /// Dot access on a tuple/object by label: `x.label` (labels only — integers and strings use computedAccess)
     case dotAccess(expr: Expr, field: String, Span)
 
     /// Bracket index access: `x[0]`, `x["key"]`
@@ -143,6 +144,21 @@ public indirect enum Expr: Equatable {
     case computedAccess(expr: Expr, index: Expr, Span)
 }
 ```
+
+### Update `Expr.span`
+
+`Expr` has a `span` computed property with an exhaustive switch over all cases. Add the five new cases — they all simply return their trailing `Span` argument:
+
+```swift
+case .tuple(_, let span),
+     .array(_, let span),
+     .dotAccess(_, _, let span),
+     .bracketAccess(_, _, let span),
+     .computedAccess(_, _, let span):
+    return span
+```
+
+Omitting this causes a compile error.
 
 ## Parsing Rules
 
@@ -188,8 +204,7 @@ Access is a **postfix** operation on an atom. After parsing an atom, check for t
 ```
 PostfixExpr = Atom Accessor*
 Accessor    = "." Label
-            | "." IntegerLiteral
-            | "." "[" Expr "]"     # computed access
+            | "." "[" Expr "]"     # computed access (integers, strings, or any expr)
             | "[" Expr "]"          # bracket access
 ```
 
@@ -198,8 +213,7 @@ Update the atom parsing to:
 1. Parse the base atom (literal, name, paren, brace, bracket)
 2. Loop: while the next token is `.dot` or `.leftBracket`:
    - **Dot followed by label**: `.dotAccess(expr, label, span)`
-   - **Dot followed by integer**: `.dotAccess(expr, integerText, span)`
-   - **Dot followed by `[`**: parse inner expression, consume `]` → `.computedAccess(expr, index, span)`
+   - **Dot followed by `[`**: parse inner expression, consume `]` → `.computedAccess(expr, index, span)` — use this for integer indices (`x.[0]`), string keys (`x.["name"]`), or any runtime expression
    - **`[` (no preceding dot)**: parse inner expression, consume `]` → `.bracketAccess(expr, index, span)`
 
 ### Integration with S-Expressions and Pipes
@@ -217,7 +231,7 @@ result: ([1, 2, 3] | sum)
 result: (x | x.name | toUpper)
 ```
 
-Within a clause (inside parens), after parsing each atom, check for postfix access. This means `parseAtom()` should be renamed or wrapped to become `parsePostfixExpr()`, which handles the base atom plus any trailing `.field` or `[index]` chains.
+Within a clause (inside parens), after parsing each atom, check for postfix access. This means `parseAtom()` should be renamed or wrapped to become `parsePostfixExpr()`, which handles the base atom plus any trailing `.field` or `[index]` chains. **Also update `parseClause` to call `parsePostfixExpr()` instead of `parseAtom()`** — without this, access expressions like `x.label` inside a clause will throw `expectedExpression` when the parser encounters the `.dot` token as a second atom.
 
 ### Empty Compound Literals
 
@@ -279,7 +293,8 @@ Add to `ParseError` as needed:
 
 **Access expressions:**
 - `testParseDotAccessLabel`: `"r: (x.label)"` → `.dotAccess(.name("x"), "label")`
-- `testParseDotAccessIndex`: `"r: (x.0)"` → `.dotAccess(.name("x"), "0")`
+- `testParseComputedAccessInteger`: `"r: (x.[0])"` → `.computedAccess(.name("x"), .integerLiteral("0"))`
+- `testParseComputedAccessString`: `"r: (x.[\"key\"])"` → `.computedAccess(.name("x"), .stringLiteral("key"))`
 - `testParseBracketAccess`: `"r: (x[0])"` → `.bracketAccess(.name("x"), .integerLiteral("0"))`
 - `testParseBracketAccessString`: `"r: (x[\"key\"])"` → bracket access with string
 - `testParseComputedAccess`: `"r: (x.[ x.[1] ])"` → computed access with nested access
