@@ -106,4 +106,22 @@ final class ErrorsTests: XCTestCase {
         XCTAssertTrue(span.description.contains("3"))
         XCTAssertTrue(span.description.contains("7"))
     }
+
+    // MARK: - New Parse Error Display
+
+    func testParseErrorExpectedClosingBraceDisplay() {
+        let err = ParseError.expectedClosingBrace(span: Span(start: 5, end: 6))
+        XCTAssertTrue(err.description.contains("'}'"))
+    }
+
+    func testParseErrorExpectedClosingBracketDisplay() {
+        let err = ParseError.expectedClosingBracket(span: Span(start: 5, end: 6))
+        XCTAssertTrue(err.description.contains("']'"))
+    }
+
+    func testParseErrorExpectedFieldDisplay() {
+        let err = ParseError.expectedField(span: Span(start: 2, end: 3))
+        XCTAssertTrue(err.description.contains("field"))
+        XCTAssertTrue(err.description.contains("'.'"))
+    }
 }

@@ -635,4 +635,444 @@ final class ParserTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Tuple/Object Literals
+
+    func testParseTupleImplicitKeys() throws {
+        let program = try parseSource("t: {1, 0.1}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple, got \(program.definitions[0].value)"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].key, .implicit)
+        XCTAssertEqual(entries[1].key, .implicit)
+        guard case .integerLiteral("1", _) = entries[0].value else {
+            XCTFail("Expected integerLiteral(\"1\")"); return
+        }
+        guard case .floatLiteral("0.1", _) = entries[1].value else {
+            XCTFail("Expected floatLiteral(\"0.1\")"); return
+        }
+    }
+
+    func testParseTupleExplicitIntKeys() throws {
+        let program = try parseSource("t: {0: 1, 2: 0.1}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .index("0", _) = entries[0].key else {
+            XCTFail("Expected .index(\"0\")"); return
+        }
+        guard case .integerLiteral("1", _) = entries[0].value else {
+            XCTFail("Expected integerLiteral(\"1\")"); return
+        }
+        guard case .index("2", _) = entries[1].key else {
+            XCTFail("Expected .index(\"2\")"); return
+        }
+        guard case .floatLiteral("0.1", _) = entries[1].value else {
+            XCTFail("Expected floatLiteral(\"0.1\")"); return
+        }
+    }
+
+    func testParseTupleLabelKeys() throws {
+        let program = try parseSource("t: {label: 1, other: 0.1}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .label("label", _) = entries[0].key else {
+            XCTFail("Expected .label(\"label\")"); return
+        }
+        guard case .integerLiteral("1", _) = entries[0].value else {
+            XCTFail("Expected integerLiteral(\"1\")"); return
+        }
+        guard case .label("other", _) = entries[1].key else {
+            XCTFail("Expected .label(\"other\")"); return
+        }
+        guard case .floatLiteral("0.1", _) = entries[1].value else {
+            XCTFail("Expected floatLiteral(\"0.1\")"); return
+        }
+    }
+
+    func testParseTupleStringKeys() throws {
+        let program = try parseSource(#"t: {"key": "value"}"#)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 1)
+        guard case .stringKey("key", _) = entries[0].key else {
+            XCTFail("Expected .stringKey(\"key\")"); return
+        }
+        guard case .stringLiteral("value", _) = entries[0].value else {
+            XCTFail("Expected stringLiteral(\"value\")"); return
+        }
+    }
+
+    func testParseTupleMixed() throws {
+        let program = try parseSource("t: {a: 1, 2}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .label("a", _) = entries[0].key else {
+            XCTFail("Expected .label(\"a\")"); return
+        }
+        XCTAssertEqual(entries[1].key, .implicit)
+    }
+
+    func testParseEmptyTuple() throws {
+        let program = try parseSource("t: {}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 0)
+    }
+
+    func testParseTupleTrailingComma() throws {
+        let program = try parseSource("t: {1, 2,}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+    }
+
+    func testParseNestedTuple() throws {
+        let program = try parseSource("t: {a: {b: 1}}")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 1)
+        guard case .label("a", _) = entries[0].key else {
+            XCTFail("Expected .label(\"a\")"); return
+        }
+        guard case .tuple(let inner, _) = entries[0].value else {
+            XCTFail("Expected inner .tuple"); return
+        }
+        XCTAssertEqual(inner.count, 1)
+        guard case .label("b", _) = inner[0].key else {
+            XCTFail("Expected .label(\"b\")"); return
+        }
+        guard case .integerLiteral("1", _) = inner[0].value else {
+            XCTFail("Expected integerLiteral(\"1\")"); return
+        }
+    }
+
+    // MARK: - Array/Map Literals
+
+    func testParseArrayImplicitKeys() throws {
+        let program = try parseSource("a: [12, 24]")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array, got \(program.definitions[0].value)"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].key, .implicit)
+        XCTAssertEqual(entries[1].key, .implicit)
+        guard case .integerLiteral("12", _) = entries[0].value else {
+            XCTFail("Expected integerLiteral(\"12\")"); return
+        }
+        guard case .integerLiteral("24", _) = entries[1].value else {
+            XCTFail("Expected integerLiteral(\"24\")"); return
+        }
+    }
+
+    func testParseArrayExplicitIntKeys() throws {
+        let program = try parseSource("a: [1: 12, 3: 24]")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .index("1", _) = entries[0].key else {
+            XCTFail("Expected .index(\"1\")"); return
+        }
+        guard case .index("3", _) = entries[1].key else {
+            XCTFail("Expected .index(\"3\")"); return
+        }
+    }
+
+    func testParseArrayLabelKeys() throws {
+        let program = try parseSource("a: [key: 12, other: 24]")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .label("key", _) = entries[0].key else {
+            XCTFail("Expected .label(\"key\")"); return
+        }
+        guard case .label("other", _) = entries[1].key else {
+            XCTFail("Expected .label(\"other\")"); return
+        }
+    }
+
+    func testParseArrayStringKeys() throws {
+        let program = try parseSource(#"a: ["some": 12, "other": 24]"#)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .stringKey("some", _) = entries[0].key else {
+            XCTFail("Expected .stringKey(\"some\")"); return
+        }
+        guard case .stringKey("other", _) = entries[1].key else {
+            XCTFail("Expected .stringKey(\"other\")"); return
+        }
+    }
+
+    func testParseEmptyArray() throws {
+        let program = try parseSource("a: []")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 0)
+    }
+
+    func testParseNestedArray() throws {
+        let program = try parseSource("a: [[1, 2], [3, 4]]")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .array(let inner1, _) = entries[0].value else {
+            XCTFail("Expected inner .array for first entry"); return
+        }
+        XCTAssertEqual(inner1.count, 2)
+        guard case .array(let inner2, _) = entries[1].value else {
+            XCTFail("Expected inner .array for second entry"); return
+        }
+        XCTAssertEqual(inner2.count, 2)
+    }
+
+    // MARK: - Access Expressions
+
+    func testParseDotAccessLabel() throws {
+        let program = try parseSource("r: (x.label)")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .dotAccess(let expr, let field, _) = program.definitions[0].value else {
+            XCTFail("Expected .dotAccess, got \(program.definitions[0].value)"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        XCTAssertEqual(field, "label")
+    }
+
+    func testParseComputedAccessInteger() throws {
+        let program = try parseSource("r: (x.[0])")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .computedAccess(let expr, let index, _) = program.definitions[0].value else {
+            XCTFail("Expected .computedAccess, got \(program.definitions[0].value)"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        guard case .integerLiteral("0", _) = index else {
+            XCTFail("Expected integerLiteral(\"0\")"); return
+        }
+    }
+
+    func testParseComputedAccessString() throws {
+        let program = try parseSource(#"r: (x.["key"])"#)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .computedAccess(let expr, let index, _) = program.definitions[0].value else {
+            XCTFail("Expected .computedAccess"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        guard case .stringLiteral("key", _) = index else {
+            XCTFail("Expected stringLiteral(\"key\")"); return
+        }
+    }
+
+    func testParseBracketAccess() throws {
+        let program = try parseSource("r: (x[0])")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .bracketAccess(let expr, let index, _) = program.definitions[0].value else {
+            XCTFail("Expected .bracketAccess, got \(program.definitions[0].value)"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        guard case .integerLiteral("0", _) = index else {
+            XCTFail("Expected integerLiteral(\"0\")"); return
+        }
+    }
+
+    func testParseBracketAccessString() throws {
+        let program = try parseSource(#"r: (x["key"])"#)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .bracketAccess(let expr, let index, _) = program.definitions[0].value else {
+            XCTFail("Expected .bracketAccess"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        guard case .stringLiteral("key", _) = index else {
+            XCTFail("Expected stringLiteral(\"key\")"); return
+        }
+    }
+
+    func testParseComputedAccess() throws {
+        let program = try parseSource("r: (x.[ x.[1] ])")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .computedAccess(let expr, let index, _) = program.definitions[0].value else {
+            XCTFail("Expected .computedAccess, got \(program.definitions[0].value)"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\") as base"); return
+        }
+        guard case .computedAccess(let innerExpr, let innerIndex, _) = index else {
+            XCTFail("Expected nested .computedAccess as index, got \(index)"); return
+        }
+        guard case .name("x", _) = innerExpr else {
+            XCTFail("Expected .name(\"x\") as inner base"); return
+        }
+        guard case .integerLiteral("1", _) = innerIndex else {
+            XCTFail("Expected integerLiteral(\"1\") as inner index"); return
+        }
+    }
+
+    func testParseChainedDotAccess() throws {
+        let program = try parseSource("r: (x.a.b.c)")
+        XCTAssertEqual(program.definitions.count, 1)
+        // Should be: dotAccess(dotAccess(dotAccess(name("x"), "a"), "b"), "c")
+        guard case .dotAccess(let mid, let field3, _) = program.definitions[0].value else {
+            XCTFail("Expected outer .dotAccess"); return
+        }
+        XCTAssertEqual(field3, "c")
+        guard case .dotAccess(let inner, let field2, _) = mid else {
+            XCTFail("Expected middle .dotAccess"); return
+        }
+        XCTAssertEqual(field2, "b")
+        guard case .dotAccess(let base, let field1, _) = inner else {
+            XCTFail("Expected inner .dotAccess"); return
+        }
+        XCTAssertEqual(field1, "a")
+        guard case .name("x", _) = base else {
+            XCTFail("Expected .name(\"x\") as base"); return
+        }
+    }
+
+    func testParseAccessInPipe() throws {
+        let program = try parseSource("r: ({k: 2} | x.k)")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .pipe(let clauses, _) = program.definitions[0].value else {
+            XCTFail("Expected .pipe, got \(program.definitions[0].value)"); return
+        }
+        XCTAssertEqual(clauses.count, 2)
+        guard case .tuple(let entries, _) = clauses[0] else {
+            XCTFail("Expected .tuple as first clause"); return
+        }
+        XCTAssertEqual(entries.count, 1)
+        guard case .dotAccess(let expr, let field, _) = clauses[1] else {
+            XCTFail("Expected .dotAccess as second clause, got \(clauses[1])"); return
+        }
+        guard case .name("x", _) = expr else {
+            XCTFail("Expected .name(\"x\")"); return
+        }
+        XCTAssertEqual(field, "k")
+    }
+
+    // MARK: - Multi-line Compound Literals
+
+    func testParseMultilineTuple() throws {
+        let source = "t: {\n  a: 1,\n  b: 2\n}"
+        let program = try parseSource(source)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .tuple(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .tuple"); return
+        }
+        XCTAssertEqual(entries.count, 2)
+        guard case .label("a", _) = entries[0].key else {
+            XCTFail("Expected .label(\"a\")"); return
+        }
+        guard case .label("b", _) = entries[1].key else {
+            XCTFail("Expected .label(\"b\")"); return
+        }
+    }
+
+    func testParseMultilineArray() throws {
+        let source = "a: [\n  1,\n  2,\n  3\n]"
+        let program = try parseSource(source)
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .array(let entries, _) = program.definitions[0].value else {
+            XCTFail("Expected .array"); return
+        }
+        XCTAssertEqual(entries.count, 3)
+    }
+
+    // MARK: - Compound Error Cases
+
+    func testParseUnclosedTuple() throws {
+        XCTAssertThrowsError(try parseSource("t: {1, 2")) { error in
+            guard case ParseError.expectedClosingBrace(_) = error else {
+                XCTFail("Expected expectedClosingBrace, got \(error)"); return
+            }
+        }
+    }
+
+    func testParseUnclosedArray() throws {
+        XCTAssertThrowsError(try parseSource("a: [1, 2")) { error in
+            guard case ParseError.expectedClosingBracket(_) = error else {
+                XCTFail("Expected expectedClosingBracket, got \(error)"); return
+            }
+        }
+    }
+
+    func testParseDotWithoutField() throws {
+        XCTAssertThrowsError(try parseSource("r: (x.)")) { error in
+            guard case ParseError.expectedField(_) = error else {
+                XCTFail("Expected expectedField, got \(error)"); return
+            }
+        }
+    }
+
+    // MARK: - Compound Literals in S-expressions and Pipes
+
+    func testParseTupleAsArgument() throws {
+        let program = try parseSource("r: (merge {a: 1} {b: 2})")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .apply(let fn, let args, _) = program.definitions[0].value else {
+            XCTFail("Expected .apply"); return
+        }
+        guard case .name("merge", _) = fn else {
+            XCTFail("Expected .name(\"merge\")"); return
+        }
+        XCTAssertEqual(args.count, 2)
+        guard case .tuple(_, _) = args[0] else {
+            XCTFail("Expected .tuple as first arg"); return
+        }
+        guard case .tuple(_, _) = args[1] else {
+            XCTFail("Expected .tuple as second arg"); return
+        }
+    }
+
+    func testParseArrayInPipe() throws {
+        let program = try parseSource("r: ([1, 2, 3] | sum)")
+        XCTAssertEqual(program.definitions.count, 1)
+        guard case .pipe(let clauses, _) = program.definitions[0].value else {
+            XCTFail("Expected .pipe"); return
+        }
+        XCTAssertEqual(clauses.count, 2)
+        guard case .array(let entries, _) = clauses[0] else {
+            XCTFail("Expected .array as first clause"); return
+        }
+        XCTAssertEqual(entries.count, 3)
+        guard case .name("sum", _) = clauses[1] else {
+            XCTFail("Expected .name(\"sum\") as second clause"); return
+        }
+    }
 }
