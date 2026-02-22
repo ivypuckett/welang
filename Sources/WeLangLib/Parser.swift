@@ -109,18 +109,75 @@ extension Parser {
 
     // MARK: Expr
 
-    /// Expr = "(" ... ")"  |  Atom
+    /// Expr = "(" ... ")"  |  PostfixExpr
     mutating func parseExpr() throws -> Expr {
-        if peek().kind == .leftParen {
-            return try parseParen()
+        return try parsePostfixExpr()
+    }
+
+    // MARK: PostfixExpr
+
+    /// PostfixExpr = Atom Accessor*
+    /// Accessor = "." Label | "." "[" Expr "]" | "[" Expr "]"
+    private mutating func parsePostfixExpr() throws -> Expr {
+        var expr = try parseAtom()
+
+        while true {
+            if peek().kind == .dot {
+                let dotToken = advance() // consume '.'
+                skipNewlines()
+
+                if peek().kind == .leftBracket {
+                    // Computed access: x.[ expr ]
+                    advance() // consume '['
+                    skipNewlines()
+                    let index = try parseExpr()
+                    skipNewlines()
+                    guard let close = match(.rightBracket) else {
+                        throw ParseError.expectedClosingBracket(span: peek().span)
+                    }
+                    expr = .computedAccess(
+                        expr: expr,
+                        index: index,
+                        Span(start: expr.span.start, end: close.span.end)
+                    )
+                } else if case .label(let fieldName) = peek().kind {
+                    // Dot access: x.label
+                    let fieldToken = advance()
+                    expr = .dotAccess(
+                        expr: expr,
+                        field: fieldName,
+                        Span(start: expr.span.start, end: fieldToken.span.end)
+                    )
+                } else {
+                    throw ParseError.expectedField(span: dotToken.span)
+                }
+            } else if peek().kind == .leftBracket {
+                // Bracket access: x[0]
+                advance() // consume '['
+                skipNewlines()
+                let index = try parseExpr()
+                skipNewlines()
+                guard let close = match(.rightBracket) else {
+                    throw ParseError.expectedClosingBracket(span: peek().span)
+                }
+                expr = .bracketAccess(
+                    expr: expr,
+                    index: index,
+                    Span(start: expr.span.start, end: close.span.end)
+                )
+            } else {
+                break
+            }
         }
-        return try parseAtom()
+
+        return expr
     }
 
     // MARK: Atom
 
     /// Atom = IntegerLiteral | FloatLiteral | StringLiteral
     ///      | InterpolatedStringLiteral | Label | "_" | "(" ... ")"
+    ///      | "{" ... "}" | "[" ... "]"
     mutating func parseAtom() throws -> Expr {
         let token = peek()
 
@@ -151,6 +208,12 @@ extension Parser {
 
         case .leftParen:
             return try parseParen()
+
+        case .leftBrace:
+            return try parseTupleLiteral()
+
+        case .leftBracket:
+            return try parseArrayLiteral()
 
         default:
             throw ParseError.expectedExpression(span: token.span)
@@ -256,15 +319,15 @@ extension Parser {
 
     // MARK: Clause
 
-    /// Clause = Atom+
+    /// Clause = PostfixExpr+
     ///
-    /// Collects atoms until `)`, `|`, or EOF. Returns a single Expr if one atom,
+    /// Collects postfix expressions until `)`, `|`, or EOF. Returns a single Expr if one,
     /// or `.apply(function: first, arguments: rest)` if multiple.
     private mutating func parseClause() throws -> Expr {
         var atoms: [Expr] = []
         skipNewlines()
         while peek().kind != .rightParen && peek().kind != .pipe && peek().kind != .eof {
-            atoms.append(try parseAtom())
+            atoms.append(try parsePostfixExpr())
             skipNewlines()
         }
         guard !atoms.isEmpty else {
@@ -275,5 +338,144 @@ extension Parser {
         }
         let span = Span(start: atoms.first!.span.start, end: atoms.last!.span.end)
         return .apply(function: atoms[0], arguments: Array(atoms.dropFirst()), span)
+    }
+
+    // MARK: Tuple Literal
+
+    /// TupleLiteral = "{" EntryList? "}"
+    /// EntryList = Entry ("," Entry)* ","?
+    /// Entry = (Key ":")? Expr
+    private mutating func parseTupleLiteral() throws -> Expr {
+        let open = advance() // consume '{'
+        skipNewlines()
+
+        // Empty tuple: {}
+        if let close = match(.rightBrace) {
+            return .tuple(entries: [], Span(start: open.span.start, end: close.span.end))
+        }
+
+        var entries: [CompoundEntry] = []
+        entries.append(try parseCompoundEntry())
+        skipNewlines()
+
+        while match(.comma) != nil {
+            skipNewlines()
+            // Allow trailing comma: check for closing brace after comma
+            if peek().kind == .rightBrace { break }
+            entries.append(try parseCompoundEntry())
+            skipNewlines()
+        }
+
+        guard let close = match(.rightBrace) else {
+            throw ParseError.expectedClosingBrace(span: peek().span)
+        }
+
+        return .tuple(entries: entries, Span(start: open.span.start, end: close.span.end))
+    }
+
+    // MARK: Array Literal
+
+    /// ArrayLiteral = "[" EntryList? "]"
+    /// EntryList = Entry ("," Entry)* ","?
+    /// Entry = (Key ":")? Expr
+    private mutating func parseArrayLiteral() throws -> Expr {
+        let open = advance() // consume '['
+        skipNewlines()
+
+        // Empty array: []
+        if let close = match(.rightBracket) {
+            return .array(entries: [], Span(start: open.span.start, end: close.span.end))
+        }
+
+        var entries: [CompoundEntry] = []
+        entries.append(try parseCompoundEntry())
+        skipNewlines()
+
+        while match(.comma) != nil {
+            skipNewlines()
+            // Allow trailing comma: check for closing bracket after comma
+            if peek().kind == .rightBracket { break }
+            entries.append(try parseCompoundEntry())
+            skipNewlines()
+        }
+
+        guard let close = match(.rightBracket) else {
+            throw ParseError.expectedClosingBracket(span: peek().span)
+        }
+
+        return .array(entries: entries, Span(start: open.span.start, end: close.span.end))
+    }
+
+    // MARK: Compound Entry
+
+    /// Entry = (Key ":")? Expr
+    /// Key = IntegerLiteral | Label | StringLiteral
+    ///
+    /// Look ahead: if the current token is an integer/label/string AND the next
+    /// non-newline token is ':', treat it as a keyed entry. Otherwise, implicit.
+    private mutating func parseCompoundEntry() throws -> CompoundEntry {
+        let startSpan = peek().span
+
+        // Try to detect a key: IntegerLiteral, Label, or StringLiteral followed by ':'
+        switch peek().kind {
+        case .integerLiteral(let text):
+            let savedPos = pos
+            let keyToken = advance()
+            skipNewlines()
+            if match(.colon) != nil {
+                skipNewlines()
+                let value = try parseExpr()
+                return CompoundEntry(
+                    key: .index(text, keyToken.span),
+                    value: value,
+                    span: Span(start: keyToken.span.start, end: value.span.end)
+                )
+            }
+            // Not a key — backtrack
+            pos = savedPos
+
+        case .label(let text):
+            let savedPos = pos
+            let keyToken = advance()
+            skipNewlines()
+            if match(.colon) != nil {
+                skipNewlines()
+                let value = try parseExpr()
+                return CompoundEntry(
+                    key: .label(text, keyToken.span),
+                    value: value,
+                    span: Span(start: keyToken.span.start, end: value.span.end)
+                )
+            }
+            // Not a key — backtrack
+            pos = savedPos
+
+        case .stringLiteral(let text):
+            let savedPos = pos
+            let keyToken = advance()
+            skipNewlines()
+            if match(.colon) != nil {
+                skipNewlines()
+                let value = try parseExpr()
+                return CompoundEntry(
+                    key: .stringKey(text, keyToken.span),
+                    value: value,
+                    span: Span(start: keyToken.span.start, end: value.span.end)
+                )
+            }
+            // Not a key — backtrack
+            pos = savedPos
+
+        default:
+            break
+        }
+
+        // Implicit key: just parse the value expression
+        let value = try parseExpr()
+        return CompoundEntry(
+            key: .implicit,
+            value: value,
+            span: Span(start: startSpan.start, end: value.span.end)
+        )
     }
 }

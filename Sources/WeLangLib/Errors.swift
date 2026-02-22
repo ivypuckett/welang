@@ -62,6 +62,9 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
     case expectedDefinition(span: Span)
     case expectedClosingParen(span: Span)
     case emptyClause(span: Span)
+    case expectedClosingBrace(span: Span)
+    case expectedClosingBracket(span: Span)
+    case expectedField(span: Span)
 
     public var description: String {
         switch self {
@@ -77,6 +80,12 @@ public enum ParseError: Error, Equatable, CustomStringConvertible {
             return "expected closing ')' at \(span)"
         case .emptyClause(let span):
             return "empty clause at \(span)"
+        case .expectedClosingBrace(let span):
+            return "expected closing '}' at \(span)"
+        case .expectedClosingBracket(let span):
+            return "expected closing ']' at \(span)"
+        case .expectedField(let span):
+            return "expected field name after '.' at \(span)"
         }
     }
 }

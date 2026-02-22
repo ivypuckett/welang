@@ -22,4 +22,12 @@ final class CompileTests: XCTestCase {
     func testCompilePipeExpr() {
         XCTAssertNoThrow(try compile("r: (1 | 2 | 3)"))
     }
+
+    func testCompileTupleLiteral() {
+        XCTAssertNoThrow(try compile("t: {1, 2}"))
+    }
+
+    func testCompileArrayLiteral() {
+        XCTAssertNoThrow(try compile("a: [1, 2]"))
+    }
 }
