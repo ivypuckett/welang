@@ -24,6 +24,34 @@ public struct Definition: Equatable {
     }
 }
 
+/// A key in a tuple/object or array/map entry.
+public enum CompoundKey: Equatable {
+    /// Implicitly assigned sequential integer index (no explicit key written).
+    case implicit
+
+    /// Explicit integer index: `{0: value}` or `[1: value]`
+    case index(String, Span)
+
+    /// Label key: `{label: value}` or `[label: value]`
+    case label(String, Span)
+
+    /// String key: `{"key": value}` or `["key": value]`
+    case stringKey(String, Span)
+}
+
+/// A single key-value entry in a compound literal.
+public struct CompoundEntry: Equatable {
+    public let key: CompoundKey
+    public let value: Expr
+    public let span: Span
+
+    public init(key: CompoundKey, value: Expr, span: Span) {
+        self.key = key
+        self.value = value
+        self.span = span
+    }
+}
+
 /// An expression node in the AST.
 ///
 /// `indirect` allows recursive nesting for future compound expression forms.
@@ -66,6 +94,21 @@ public indirect enum Expr: Equatable {
     /// `(it: do it)` → .lambda(param: "it", body: .apply(.name("do"), [.name("it")]))
     case lambda(param: String, body: Expr, Span)
 
+    /// Tuple/object literal: `{1, 0.1}`, `{label: 1}`, `{"key": "value"}`
+    case tuple(entries: [CompoundEntry], Span)
+
+    /// Array/map literal: `[12, 24]`, `[key: 12]`, `["k": 1]`
+    case array(entries: [CompoundEntry], Span)
+
+    /// Dot access on a tuple/object by label: `x.label`
+    case dotAccess(expr: Expr, field: String, Span)
+
+    /// Bracket index access: `x[0]`, `x["key"]`
+    case bracketAccess(expr: Expr, index: Expr, Span)
+
+    /// Computed dot-bracket access: `x.[ expr ]`
+    case computedAccess(expr: Expr, index: Expr, Span)
+
     /// The source span for this expression node.
     public var span: Span {
         switch self {
@@ -79,7 +122,12 @@ public indirect enum Expr: Equatable {
             return span
         case .apply(_, _, let span),
              .pipe(_, let span),
-             .lambda(_, _, let span):
+             .lambda(_, _, let span),
+             .tuple(_, let span),
+             .array(_, let span),
+             .dotAccess(_, _, let span),
+             .bracketAccess(_, _, let span),
+             .computedAccess(_, _, let span):
             return span
         }
     }

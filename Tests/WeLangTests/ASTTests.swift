@@ -131,4 +131,126 @@ final class ASTTests: XCTestCase {
         let b = Expr.lambda(param: "it", body: .name("other", s0), s0)
         XCTAssertNotEqual(a, b)
     }
+
+    // MARK: - CompoundKey
+
+    func testCompoundKeyImplicit() {
+        let a = CompoundKey.implicit
+        let b = CompoundKey.implicit
+        XCTAssertEqual(a, b)
+    }
+
+    func testCompoundKeyLabel() {
+        let a = CompoundKey.label("a", s0)
+        let b = CompoundKey.label("a", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testCompoundKeyLabelInequality() {
+        let a = CompoundKey.label("a", s0)
+        let b = CompoundKey.label("b", s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    func testCompoundKeyIndex() {
+        let a = CompoundKey.index("0", s0)
+        let b = CompoundKey.index("0", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testCompoundKeyStringKey() {
+        let a = CompoundKey.stringKey("key", s0)
+        let b = CompoundKey.stringKey("key", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    // MARK: - CompoundEntry
+
+    func testCompoundEntryEquality() {
+        let a = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let b = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testCompoundEntryInequality() {
+        let a = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let b = CompoundEntry(key: .label("x", s0), value: .integerLiteral("1", s0), span: s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Tuple
+
+    func testTupleEquality() {
+        let entry = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let a = Expr.tuple(entries: [entry], s0)
+        let b = Expr.tuple(entries: [entry], s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testTupleInequality() {
+        let e1 = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let e2 = CompoundEntry(key: .implicit, value: .integerLiteral("2", s0), span: s0)
+        let a = Expr.tuple(entries: [e1], s0)
+        let b = Expr.tuple(entries: [e2], s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - Array
+
+    func testArrayEquality() {
+        let entry = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let a = Expr.array(entries: [entry], s0)
+        let b = Expr.array(entries: [entry], s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testArrayInequality() {
+        let e1 = CompoundEntry(key: .implicit, value: .integerLiteral("1", s0), span: s0)
+        let e2 = CompoundEntry(key: .implicit, value: .integerLiteral("2", s0), span: s0)
+        let a = Expr.array(entries: [e1], s0)
+        let b = Expr.array(entries: [e2], s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - DotAccess
+
+    func testDotAccessEquality() {
+        let a = Expr.dotAccess(expr: .name("x", s0), field: "label", s0)
+        let b = Expr.dotAccess(expr: .name("x", s0), field: "label", s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testDotAccessInequality() {
+        let a = Expr.dotAccess(expr: .name("x", s0), field: "label", s0)
+        let b = Expr.dotAccess(expr: .name("x", s0), field: "other", s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - BracketAccess
+
+    func testBracketAccessEquality() {
+        let a = Expr.bracketAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        let b = Expr.bracketAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testBracketAccessInequality() {
+        let a = Expr.bracketAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        let b = Expr.bracketAccess(expr: .name("x", s0), index: .integerLiteral("1", s0), s0)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - ComputedAccess
+
+    func testComputedAccessEquality() {
+        let a = Expr.computedAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        let b = Expr.computedAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        XCTAssertEqual(a, b)
+    }
+
+    func testComputedAccessInequality() {
+        let a = Expr.computedAccess(expr: .name("x", s0), index: .integerLiteral("0", s0), s0)
+        let b = Expr.computedAccess(expr: .name("y", s0), index: .integerLiteral("0", s0), s0)
+        XCTAssertNotEqual(a, b)
+    }
 }
