@@ -1,5 +1,0 @@
-module CLLLVM [system] {
-    header "shim.h"
-    link "LLVM-18"
-    export *
-}
