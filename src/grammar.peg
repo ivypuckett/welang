@@ -1,0 +1,228 @@
+# ===========================================================================
+# welang PEG Grammar
+# ===========================================================================
+#
+# A functional language with:
+#   - S-expression (prefix) and pipe (postfix) notation
+#   - ML-style structural (alias) and nominal (identifier) types
+#   - Parametric polymorphism and higher-order functions
+#   - Compile-time macros, tuples/objects, arrays/maps, conditional maps
+#   - Single-statement top-level definitions
+#   - Always-monadic functions (one in, one out)
+#   - Modularization via single pub export per file
+#
+# PEG notation used:
+#   rule <- pattern          define a rule
+#   e1 / e2                  ordered choice
+#   e*                       zero or more
+#   e+                       one or more
+#   e?                       optional
+#   &e                       positive lookahead
+#   !e                       negative lookahead
+#   'x'                      literal string
+#   [a-z]                    character class
+#   .                        any character
+
+# ===========================================================================
+# Top-Level Structure
+# ===========================================================================
+
+Program         <- Spacing Definition* EOF
+
+Definition      <- Label TypeAnnotation? ':' Spacing Expr CommaOrSpacing
+
+# ===========================================================================
+# Type Annotations
+# ===========================================================================
+
+TypeAnnotation  <- IdentifierType / AliasType
+
+IdentifierType  <- '*' TypeExpr
+AliasType       <- "'" TypeExpr
+
+TypeExpr        <- TypeFunction
+                 / TypeTuple
+                 / TypeArray
+                 / Label
+
+TypeFunction    <- '(' Spacing TypeExpr Spacing '|' Spacing TypeExpr Spacing ')'
+
+TypeTuple       <- '{' Spacing TypeTupleEntry (CommaOrSpacing TypeTupleEntry)* Spacing '}'
+TypeTupleEntry  <- Label Spacing ':' Spacing TypeExpr
+
+TypeArray       <- '[' Spacing TypeExpr Spacing ':' Spacing TypeExpr Spacing ']'
+
+# ===========================================================================
+# Expressions
+# ===========================================================================
+
+Expr            <- MacroExpr
+                 / PipeExpr
+
+MacroExpr       <- '@' Label Spacing Expr
+
+PipeExpr        <- PipeHead (Spacing '|' Spacing PipeClause)*
+
+PipeHead        <- PrefixExpr
+
+PipeClause      <- PrefixExpr
+
+PrefixExpr      <- AccessExpr (Spacing AccessExpr)*
+
+AccessExpr      <- PrimaryExpr (DotAccess / BracketAccess)*
+
+DotAccess       <- '.' !'[' Label
+
+BracketAccess   <- '.' '[' Spacing Expr Spacing ']'
+                 / '[' Spacing Expr Spacing ']'
+
+# ===========================================================================
+# Primary Expressions
+# ===========================================================================
+
+PrimaryExpr     <- FloatLiteral
+                 / IntegerLiteral
+                 / InterpolatedString
+                 / StringLiteral
+                 / Discard
+                 / TypeLiteral
+                 / ConditionalMap
+                 / ArrayLiteral
+                 / TupleLiteral
+                 / SExpr
+                 / UnitLiteral
+                 / NameRef
+
+# ===========================================================================
+# Literals: Numbers
+# ===========================================================================
+
+FloatLiteral    <- '-'? [0-9]+ '.' [0-9]+ Spacing
+
+IntegerLiteral  <- '-'? [0-9]+ !('.' [0-9]) Spacing
+
+# ===========================================================================
+# Literals: Strings
+# ===========================================================================
+
+StringLiteral           <- '"' StringChar* '"' Spacing
+
+StringChar              <- '\\' EscapeChar
+                         / !'"' !'\\' .
+
+EscapeChar              <- ["\\/nrtbf]
+
+InterpolatedString      <- '`' InterpolatedPart* '`' Spacing
+
+InterpolatedPart        <- Interpolation
+                         / InterpolatedEscape
+                         / InterpolatedChar
+
+Interpolation           <- '{{' Spacing Expr Spacing '}}'
+
+InterpolatedEscape      <- '\\{' / '\\\\'
+
+InterpolatedChar        <- !'`' !'{{' !'\\{' !'\\\\' .
+
+# ===========================================================================
+# Literals: Unit and Discard
+# ===========================================================================
+
+UnitLiteral     <- '(' Spacing ')' Spacing
+
+Discard         <- '_' ![a-zA-Z0-9_] Spacing
+
+# ===========================================================================
+# Type Literals (used as values)
+# ===========================================================================
+
+TypeLiteral     <- IdentifierType / AliasType
+
+# ===========================================================================
+# Compound Literals: Tuples / Objects
+# ===========================================================================
+
+TupleLiteral    <- '{' Spacing TupleEntries? Spacing '}' Spacing
+
+TupleEntries    <- TupleEntry (CommaOrSpacing TupleEntry)*
+
+TupleEntry      <- IntegerKey Spacing ':' Spacing Expr
+                 / Label Spacing ':' Spacing Expr
+                 / Expr
+
+IntegerKey      <- [0-9]+
+
+# ===========================================================================
+# Compound Literals: Arrays / Maps
+# ===========================================================================
+
+ArrayLiteral    <- '[' Spacing ArrayEntries? Spacing ']' Spacing
+
+ArrayEntries    <- ArrayEntry (CommaOrSpacing ArrayEntry)*
+
+ArrayEntry      <- StringKey Spacing ':' Spacing Expr
+                 / IntegerKey Spacing ':' Spacing Expr
+                 / Label Spacing ':' Spacing Expr
+                 / Expr
+
+StringKey       <- '"' StringChar* '"'
+
+# ===========================================================================
+# Conditional Maps (pattern matching)
+# ===========================================================================
+
+ConditionalMap  <- '[' Spacing ConditionalEntry (CommaOrSpacing ConditionalEntry)* Spacing ']'
+
+ConditionalEntry <- '(' Spacing Expr Spacing ')' Spacing ':' Spacing Expr
+
+# ===========================================================================
+# S-Expressions (prefix notation + pipes + lambdas)
+# ===========================================================================
+
+SExpr           <- '(' Spacing SExprBody Spacing ')' Spacing
+
+SExprBody       <- LambdaBody
+                 / PipeBody
+                 / LeadingPipeBody
+
+LambdaBody      <- Label Spacing ':' Spacing Expr
+
+PipeBody        <- PrefixExpr (Spacing PrefixExpr)* (Spacing '|' Spacing PipeClauseInner)*
+
+LeadingPipeBody <- ('|' Spacing PipeClauseInner)+
+
+PipeClauseInner <- PrefixExpr (Spacing PrefixExpr)*
+
+# ===========================================================================
+# Name References (labels used as values)
+# ===========================================================================
+
+NameRef         <- Label
+
+# ===========================================================================
+# Labels (identifiers)
+# ===========================================================================
+
+Label           <- !ReservedWord [a-zA-Z_] [a-zA-Z0-9_]* Spacing
+
+ReservedWord    <- 'pub' ![a-zA-Z0-9_]
+                 / 'import' ![a-zA-Z0-9_]
+
+# ===========================================================================
+# Spacing and Comments
+# ===========================================================================
+
+Spacing         <- (Whitespace / Comment)*
+
+Whitespace      <- [ \t\r\n]+
+
+Comment         <- '#' (![\r\n] .)* ([\r\n] / EOF)
+
+CommaOrSpacing  <- Spacing ',' Spacing
+                 / Spacing
+
+# ===========================================================================
+# End of File
+# ===========================================================================
+
+EOF             <- !.
