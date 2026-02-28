@@ -336,13 +336,13 @@ pub fn lex_array_literal_test() {
 }
 
 pub fn lex_sexpr_test() {
-  // `(add 1 2)`
-  lexer.lex("(add 1 2)")
+  // `(print increment 1)`
+  lexer.lex("(print increment 1)")
   |> should.equal(Ok([
     lexer.TokLParen,
-    lexer.TokLabel("add"),
+    lexer.TokLabel("print"),
+    lexer.TokLabel("increment"),
     lexer.TokInt("1"),
-    lexer.TokInt("2"),
     lexer.TokRParen,
     lexer.TokEof,
   ]))
