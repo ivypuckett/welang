@@ -158,22 +158,48 @@ fn parse_definitions(
 fn parse_definition(toks: Tokens) -> ParseResult(Definition) {
   case toks {
     [#(TokLabel(name), _), ..rest1] -> {
-      let #(annot, rest2) = try_parse_type_annotation(rest1)
-      case rest2 {
-        [#(TokColon, _), ..rest3] ->
-          case parse_expr(rest3) {
-            Ok(#(expr, rest4)) -> {
-              let rest5 = skip_comma(rest4)
-              Ok(#(Definition(name, annot, expr), rest5))
-            }
-            Error(e) -> Error(e)
+      // Nominal (identifier) types are not allowed on definitions
+      case rest1 {
+        [#(TokStar, pos), ..] -> Error(UnexpectedToken(TokStar, pos))
+        _ -> {
+          let #(annot, rest2) = try_parse_type_annotation(rest1)
+          case rest2 {
+            [#(TokColon, _), ..rest3] ->
+              case parse_definition_body(rest3) {
+                Ok(#(expr, rest4)) -> {
+                  let rest5 = skip_comma(rest4)
+                  Ok(#(Definition(name, annot, expr), rest5))
+                }
+                Error(e) -> Error(e)
+              }
+            [#(t, pos), ..] -> Error(UnexpectedToken(t, pos))
+            [] -> Error(UnexpectedEof)
           }
-        [#(t, pos), ..] -> Error(UnexpectedToken(t, pos))
-        [] -> Error(UnexpectedEof)
+        }
       }
     }
     [#(t, pos), ..] -> Error(UnexpectedToken(t, pos))
     [] -> Error(UnexpectedEof)
+  }
+}
+
+// Definition bodies are monadic: MacroExpr is allowed, but top-level pipes are
+// not. A pipe must be wrapped inside an S-expression: z: (a | b).
+fn parse_definition_body(toks: Tokens) -> ParseResult(Expr) {
+  case toks {
+    // MacroExpr: '@' Label Expr
+    [#(TokAt, _), #(TokLabel(name), _), ..rest] ->
+      case parse_expr(rest) {
+        Ok(#(body, rest2)) -> Ok(#(MacroExpr(name, body), rest2))
+        Error(e) -> Error(e)
+      }
+    // Everything else: a single PrefixExpr — top-level pipe is intentionally
+    // excluded; TokPipe is a stopper so parse_prefix_expr stops before '|'.
+    _ ->
+      case parse_prefix_expr(toks) {
+        Ok(#(head, rest)) -> Ok(#(PipeExpr(head, []), rest))
+        Error(e) -> Error(e)
+      }
   }
 }
 
