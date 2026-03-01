@@ -33,13 +33,13 @@ fn simple_primary(expr: parser.Expr) -> parser.PrimaryExpr {
 // ---------------------------------------------------------------------------
 
 pub fn parse_integer_test() {
-  single_body("x: 42")
+  single_body("z: 42")
   |> simple_primary
   |> should.equal(parser.IntLit("42"))
 }
 
 pub fn parse_negative_integer_test() {
-  single_body("x: -5")
+  single_body("z: -5")
   |> simple_primary
   |> should.equal(parser.IntLit("-5"))
 }
@@ -49,7 +49,7 @@ pub fn parse_negative_integer_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_float_test() {
-  single_body("x: 3.14")
+  single_body("z: 3.14")
   |> simple_primary
   |> should.equal(parser.FloatLit("3.14"))
 }
@@ -59,7 +59,7 @@ pub fn parse_float_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_string_test() {
-  single_body("x: \"hello\"")
+  single_body("z: \"hello\"")
   |> simple_primary
   |> should.equal(parser.StringLit("hello"))
 }
@@ -69,7 +69,7 @@ pub fn parse_string_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_unit_test() {
-  single_body("x: ()")
+  single_body("z: ()")
   |> simple_primary
   |> should.equal(parser.UnitLit)
 }
@@ -79,7 +79,7 @@ pub fn parse_unit_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_discard_test() {
-  single_body("x: _")
+  single_body("z: _")
   |> simple_primary
   |> should.equal(parser.Discard)
 }
@@ -89,7 +89,7 @@ pub fn parse_discard_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_nameref_test() {
-  single_body("x: foo")
+  single_body("z: foo")
   |> simple_primary
   |> should.equal(parser.NameRef("foo"))
 }
@@ -98,11 +98,28 @@ pub fn parse_nameref_test() {
 // Pipe expression
 // ---------------------------------------------------------------------------
 
+// A bare top-level pipe in a definition is invalid — must be wrapped in (...)
+pub fn parse_pipe_expr_error_test() {
+  parse_src("z: a | b")
+  |> should.be_error()
+}
+
+// Pipe wrapped in an S-expression is the correct monadic form
 pub fn parse_pipe_expr_test() {
-  let body = single_body("x: a | b")
+  let body = single_body("z: (a | b)")
   let assert parser.PipeExpr(
-    parser.PrefixExpr(parser.AccessExpr(parser.NameRef("a"), []), []),
-    [parser.PrefixExpr(parser.AccessExpr(parser.NameRef("b"), []), [])],
+    parser.PrefixExpr(
+      parser.AccessExpr(
+        parser.SExprLit(parser.PipeBody(
+          parser.PrefixExpr(parser.AccessExpr(parser.NameRef("a"), []), []),
+          [],
+          [parser.PrefixExpr(parser.AccessExpr(parser.NameRef("b"), []), [])],
+        )),
+        [],
+      ),
+      [],
+    ),
+    [],
   ) = body
   should.be_true(True)
 }
@@ -112,7 +129,7 @@ pub fn parse_pipe_expr_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_macro_test() {
-  let body = single_body("x: @log foo")
+  let body = single_body("z: @log foo")
   let assert parser.MacroExpr("log", inner) = body
   inner
   |> simple_primary
@@ -124,7 +141,7 @@ pub fn parse_macro_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_dot_access_test() {
-  let body = single_body("x: obj.field")
+  let body = single_body("z: obj.field")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
       parser.AccessExpr(parser.NameRef("obj"), [parser.DotAccess("field")]),
@@ -140,7 +157,7 @@ pub fn parse_dot_access_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_sexpr_application_test() {
-  let body = single_body("x: (print foo)")
+  let body = single_body("z: (print foo)")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
       parser.AccessExpr(
@@ -162,18 +179,20 @@ pub fn parse_sexpr_application_test() {
 // Lambda
 // ---------------------------------------------------------------------------
 
+// The default input variable is x, so lambda parameters should use a different
+// name. Here we use y as the explicit parameter.
 pub fn parse_lambda_test() {
-  let body = single_body("f: (x: x)")
+  let body = single_body("f: (y: z)")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
-      parser.AccessExpr(parser.SExprLit(parser.LambdaBody("x", inner)), _),
+      parser.AccessExpr(parser.SExprLit(parser.LambdaBody("y", inner)), _),
       _,
     ),
     _,
   ) = body
   inner
   |> simple_primary
-  |> should.equal(parser.NameRef("x"))
+  |> should.equal(parser.NameRef("z"))
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +200,7 @@ pub fn parse_lambda_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_array_test() {
-  let body = single_body("x: [1, 2, 3]")
+  let body = single_body("z: [1, 2, 3]")
   let assert parser.PipeExpr(
     parser.PrefixExpr(parser.AccessExpr(parser.ArrayLit(entries), _), _),
     _,
@@ -191,7 +210,7 @@ pub fn parse_array_test() {
 }
 
 pub fn parse_empty_array_test() {
-  single_body("x: []")
+  single_body("z: []")
   |> simple_primary
   |> should.equal(parser.ArrayLit([]))
 }
@@ -201,7 +220,7 @@ pub fn parse_empty_array_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_tuple_test() {
-  let body = single_body("x: { a: 1, b: 2 }")
+  let body = single_body("z: { a: 1, b: 2 }")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
       parser.AccessExpr(parser.TupleLit(entries), _),
@@ -214,7 +233,7 @@ pub fn parse_tuple_test() {
 }
 
 pub fn parse_empty_tuple_test() {
-  single_body("x: {}")
+  single_body("z: {}")
   |> simple_primary
   |> should.equal(parser.TupleLit([]))
 }
@@ -224,7 +243,7 @@ pub fn parse_empty_tuple_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_conditional_map_test() {
-  let body = single_body("x: [(a): 1, (b): 2]")
+  let body = single_body("z: [(a): 1, (b): 2]")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
       parser.AccessExpr(parser.ConditionalMapLit(entries), _),
@@ -240,38 +259,30 @@ pub fn parse_conditional_map_test() {
 // Type annotations
 // ---------------------------------------------------------------------------
 
+// Nominal (identifier) types are not allowed on definitions
 pub fn parse_identifier_type_annotation_test() {
-  let assert Ok(parser.Program([parser.Definition(_, annot, _)])) =
-    parse_src("x *Foo: 42")
-  annot
-  |> should.equal(Some(parser.IdentifierType(parser.TypeLabel("Foo"))))
+  parse_src("z *Foo: 42")
+  |> should.be_error()
 }
 
 pub fn parse_alias_type_annotation_test() {
   let assert Ok(parser.Program([parser.Definition(_, annot, _)])) =
-    parse_src("x 'Foo: 42")
+    parse_src("z 'Foo: 42")
   annot
   |> should.equal(Some(parser.AliasType(parser.TypeLabel("Foo"))))
 }
 
 pub fn parse_no_annotation_test() {
   let assert Ok(parser.Program([parser.Definition(_, annot, _)])) =
-    parse_src("x: 42")
+    parse_src("z: 42")
   annot
   |> should.equal(None)
 }
 
+// Nominal types with function syntax are also disallowed on definitions
 pub fn parse_type_function_annotation_test() {
-  let assert Ok(parser.Program([parser.Definition(_, annot, _)])) =
-    parse_src("f *(Int | Str): 42")
-  annot
-  |> should.equal(
-    Some(
-      parser.IdentifierType(
-        parser.TypeFunction(parser.TypeLabel("Int"), parser.TypeLabel("Str")),
-      ),
-    ),
-  )
+  parse_src("f *(Int | Str): 42")
+  |> should.be_error()
 }
 
 // ---------------------------------------------------------------------------
@@ -279,9 +290,13 @@ pub fn parse_type_function_annotation_test() {
 // ---------------------------------------------------------------------------
 
 pub fn parse_multiple_definitions_test() {
-  let assert Ok(parser.Program(defs)) = parse_src("x: 1\ny: 2")
+  let assert Ok(parser.Program(defs)) = parse_src("a: 1\nb: 2")
   list.length(defs)
   |> should.equal(2)
+  let assert [parser.Definition(name1, _, _), parser.Definition(name2, _, _)] =
+    defs
+  name1 |> should.equal("a")
+  name2 |> should.equal("b")
 }
 
 // ---------------------------------------------------------------------------

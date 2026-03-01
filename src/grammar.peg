@@ -29,12 +29,18 @@
 
 Program         <- Spacing Definition* EOF
 
-Definition      <- Label TypeAnnotation? ':' Spacing Expr CommaOrSpacing
+# Definition bodies are monadic: nominal (IdentifierType) annotations are
+# forbidden on definitions, and top-level pipe expressions are not allowed —
+# use an S-expression to compose pipes: z: (a | b)
+Definition      <- Label AliasType? ':' Spacing DefinitionBody CommaOrSpacing
+
+DefinitionBody  <- MacroExpr / PrefixExpr
 
 # ===========================================================================
 # Type Annotations
 # ===========================================================================
 
+# TypeAnnotation covers both forms; only AliasType is permitted on definitions.
 TypeAnnotation  <- IdentifierType / AliasType
 
 IdentifierType  <- '*' TypeExpr
