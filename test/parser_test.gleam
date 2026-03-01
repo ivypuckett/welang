@@ -182,7 +182,7 @@ pub fn parse_sexpr_application_test() {
 // The default input variable is x, so lambda parameters should use a different
 // name. Here we use y as the explicit parameter.
 pub fn parse_lambda_test() {
-  let body = single_body("f: (y: y)")
+  let body = single_body("f: (y: z)")
   let assert parser.PipeExpr(
     parser.PrefixExpr(
       parser.AccessExpr(parser.SExprLit(parser.LambdaBody("y", inner)), _),
@@ -192,7 +192,7 @@ pub fn parse_lambda_test() {
   ) = body
   inner
   |> simple_primary
-  |> should.equal(parser.NameRef("y"))
+  |> should.equal(parser.NameRef("z"))
 }
 
 // ---------------------------------------------------------------------------
