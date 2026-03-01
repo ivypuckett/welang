@@ -100,17 +100,19 @@ fn do_lex(
     [] -> Ok([TokEof, ..acc])
 
     // Whitespace — skip silently
-    [c, ..rest] if is_whitespace(c) -> do_lex(rest, pos + 1, acc)
+    [c, ..rest]
+      if c == " " || c == "\t" || c == "\r" || c == "\n"
+    -> do_lex(rest, pos + 1, acc)
 
     // Line comments  `# …`
     ["#", ..rest] -> do_lex(skip_comment(rest), pos, acc)
 
     // Negative number  `-5`  or  `-3.14`
-    ["-", c, ..rest] if is_digit(c) ->
+    ["-", c, ..rest] if c >= "0" && c <= "9" ->
       lex_number("-", [c, ..rest], pos, acc)
 
     // Positive number
-    [c, ..] if is_digit(c) -> lex_number("", chars, pos, acc)
+    [c, ..] if c >= "0" && c <= "9" -> lex_number("", chars, pos, acc)
 
     // String literal  `"…"`
     ["\"", ..rest] -> lex_string(rest, pos + 1, acc)
@@ -119,12 +121,17 @@ fn do_lex(
     ["`", ..rest] -> lex_interpolated(rest, pos + 1, acc)
 
     // Underscore: Discard `_` vs. label starting with `_foo`
-    ["_", c, ..rest] if is_alnum(c) ->
-      lex_label(["_", c, ..rest], pos, acc)
+    ["_", c, ..rest]
+      if c >= "a" && c <= "z"
+      || c >= "A" && c <= "Z"
+      || c >= "0" && c <= "9"
+      || c == "_"
+    -> lex_label(["_", c, ..rest], pos, acc)
     ["_", ..rest] -> do_lex(rest, pos + 1, [TokUnderscore, ..acc])
 
     // Label / keyword  (starts with a-z, A-Z, or _)
-    [c, ..] if is_alpha_start(c) -> lex_label(chars, pos, acc)
+    [c, ..] if c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c == "_" ->
+      lex_label(chars, pos, acc)
 
     // Single-character punctuation
     ["(", ..rest] -> do_lex(rest, pos + 1, [TokLParen, ..acc])
@@ -158,7 +165,7 @@ fn lex_number(
   let #(int_part, rest) = collect_while(chars, is_digit, "")
   case rest {
     // Float: digits '.' digits
-    [".", d, ..tail] if is_digit(d) -> {
+    [".", d, ..tail] if d >= "0" && d <= "9" -> {
       let #(frac_part, rest2) = collect_while([d, ..tail], is_digit, "")
       let value = sign <> int_part <> "." <> frac_part
       do_lex(rest2, pos + string.length(value), [TokFloat(value), ..acc])
