@@ -108,11 +108,12 @@ fn do_lex(
     ["#", ..rest] -> do_lex(skip_comment(rest), pos, acc)
 
     // Negative number  `-5`  or  `-3.14`
-    ["-", c, ..rest] if is_digit(c) ->
-      lex_number("-", [c, ..rest], pos, acc)
-
-    // Positive number
-    [c, ..] if is_digit(c) -> lex_number("", chars, pos, acc)
+    ["-", c, ..rest] -> {
+      case is_digit(c) {
+        True -> lex_number("-", [c, ..rest], pos, acc)
+        False -> Error(UnexpectedChar("-", pos))
+      }
+    }
 
     // String literal  `"…"`
     ["\"", ..rest] -> lex_string(rest, pos + 1, acc)
@@ -121,12 +122,13 @@ fn do_lex(
     ["`", ..rest] -> lex_interpolated(rest, pos + 1, acc)
 
     // Underscore: Discard `_` vs. label starting with `_foo`
-    ["_", c, ..rest] if is_alnum(c) ->
-      lex_label(["_", c, ..rest], pos, acc)
-    ["_", ..rest] -> do_lex(rest, pos + 1, [TokUnderscore, ..acc])
-
-    // Label / keyword  (starts with a-z, A-Z, or _)
-    [c, ..] if is_alpha_start(c) -> lex_label(chars, pos, acc)
+    ["_", c, ..rest] -> {
+      case is_alnum(c) {
+        True -> lex_label(["_", c, ..rest], pos, acc)
+        False -> do_lex([c, ..rest], pos + 1, [TokUnderscore, ..acc])
+      }
+    }
+    ["_"] -> do_lex([], pos + 1, [TokUnderscore, ..acc])
 
     // Single-character punctuation
     ["(", ..rest] -> do_lex(rest, pos + 1, [TokLParen, ..acc])
@@ -143,7 +145,17 @@ fn do_lex(
     ["*", ..rest] -> do_lex(rest, pos + 1, [TokStar, ..acc])
     ["'", ..rest] -> do_lex(rest, pos + 1, [TokTick, ..acc])
 
-    [c, ..] -> Error(UnexpectedChar(c, pos))
+    // Positive number, label/keyword, or unknown character
+    [c, ..] -> {
+      case is_digit(c) {
+        True -> lex_number("", chars, pos, acc)
+        False ->
+          case is_alpha_start(c) {
+            True -> lex_label(chars, pos, acc)
+            False -> Error(UnexpectedChar(c, pos))
+          }
+      }
+    }
   }
 }
 
@@ -160,12 +172,21 @@ fn lex_number(
   let #(int_part, rest) = collect_while(chars, is_digit, "")
   case rest {
     // Float: digits '.' digits
-    [".", d, ..tail] if is_digit(d) -> {
-      let #(frac_part, rest2) = collect_while([d, ..tail], is_digit, "")
-      let value = sign <> int_part <> "." <> frac_part
-      do_lex(rest2, pos + string.length(value), [TokFloat(value), ..acc])
+    [".", d, ..tail] -> {
+      case is_digit(d) {
+        True -> {
+          let #(frac_part, rest2) = collect_while([d, ..tail], is_digit, "")
+          let value = sign <> int_part <> "." <> frac_part
+          do_lex(rest2, pos + string.length(value), [TokFloat(value), ..acc])
+        }
+        // '.' not followed by a digit — emit integer, leave '.' for next pass
+        False -> {
+          let value = sign <> int_part
+          do_lex(rest, pos + string.length(value), [TokInt(value), ..acc])
+        }
+      }
     }
-    // Integer (no decimal point, or '.' not followed by a digit)
+    // Integer (no decimal point)
     _ -> {
       let value = sign <> int_part
       do_lex(rest, pos + string.length(value), [TokInt(value), ..acc])
