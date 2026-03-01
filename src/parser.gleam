@@ -358,22 +358,19 @@ fn parse_prefix_expr(toks: Tokens) -> ParseResult(PrefixExpr) {
   }
 }
 
-// Tokens that can never start a primary expression — used to break greedy loops
-fn is_stopper(t: Token) -> Bool {
-  case t {
-    TokEof | TokRParen | TokRBrace | TokRBracket | TokPipe | TokComma
-    | TokColon -> True
-    _ -> False
-  }
-}
-
 fn parse_access_exprs(
   toks: Tokens,
   acc: List(AccessExpr),
 ) -> ParseResult(List(AccessExpr)) {
   case toks {
     [] -> Ok(#(list.reverse(acc), toks))
-    [#(t, _), ..] if is_stopper(t) -> Ok(#(list.reverse(acc), toks))
+    [#(TokEof, _), ..]
+    | [#(TokRParen, _), ..]
+    | [#(TokRBrace, _), ..]
+    | [#(TokRBracket, _), ..]
+    | [#(TokPipe, _), ..]
+    | [#(TokComma, _), ..]
+    | [#(TokColon, _), ..] -> Ok(#(list.reverse(acc), toks))
     _ ->
       case parse_access_expr(toks) {
         Ok(#(ae, rest)) -> parse_access_exprs(rest, [ae, ..acc])
