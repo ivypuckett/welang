@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cranelift-codegen = { version = "0.109", features = ["x86"] }
+cranelift-frontend = "0.109"
+cranelift-module = "0.109"
+cranelift-object = "0.109"
+target-lexicon = "0.12"
