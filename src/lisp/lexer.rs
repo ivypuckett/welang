@@ -75,16 +75,31 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                             closed = true;
                             break;
                         }
-                        '\\' => {
-                            match chars.peek() {
-                                Some(&'n') => { chars.next(); s.push('\n'); }
-                                Some(&'t') => { chars.next(); s.push('\t'); }
-                                Some(&'r') => { chars.next(); s.push('\r'); }
-                                Some(&'"') => { chars.next(); s.push('"'); }
-                                Some(&'\\') => { chars.next(); s.push('\\'); }
-                                _ => { s.push('\\'); }
+                        '\\' => match chars.peek() {
+                            Some(&'n') => {
+                                chars.next();
+                                s.push('\n');
                             }
-                        }
+                            Some(&'t') => {
+                                chars.next();
+                                s.push('\t');
+                            }
+                            Some(&'r') => {
+                                chars.next();
+                                s.push('\r');
+                            }
+                            Some(&'"') => {
+                                chars.next();
+                                s.push('"');
+                            }
+                            Some(&'\\') => {
+                                chars.next();
+                                s.push('\\');
+                            }
+                            _ => {
+                                s.push('\\');
+                            }
+                        },
                         _ => s.push(ch),
                     }
                 }
@@ -149,7 +164,9 @@ fn looks_like_number(word: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    s.chars().next().map_or(false, |c| c.is_ascii_digit() || c == '.')
+    s.chars()
+        .next()
+        .map_or(false, |c| c.is_ascii_digit() || c == '.')
 }
 
 #[cfg(test)]
@@ -163,10 +180,7 @@ mod tests {
 
     #[test]
     fn test_parens() {
-        assert_eq!(
-            tokenize("()").unwrap(),
-            vec![Token::LParen, Token::RParen]
-        );
+        assert_eq!(tokenize("()").unwrap(), vec![Token::LParen, Token::RParen]);
     }
 
     #[test]
@@ -241,7 +255,10 @@ mod tests {
 
     #[test]
     fn test_unterminated_string() {
-        assert_eq!(tokenize(r#""oops"#).unwrap_err(), LexError::UnterminatedString);
+        assert_eq!(
+            tokenize(r#""oops"#).unwrap_err(),
+            LexError::UnterminatedString
+        );
     }
 
     #[test]

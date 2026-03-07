@@ -1,4 +1,4 @@
-use crate::lisp::lexer::{tokenize, LexError, Token};
+use crate::lisp::lexer::{LexError, Token, tokenize};
 
 /// An expression in the LISP AST.
 #[derive(Debug, PartialEq, Clone)]
@@ -162,10 +162,7 @@ mod tests {
 
     #[test]
     fn test_parse_symbol() {
-        assert_eq!(
-            parse("foo").unwrap(),
-            vec![Expr::Symbol("foo".to_string())]
-        );
+        assert_eq!(parse("foo").unwrap(), vec![Expr::Symbol("foo".to_string())]);
     }
 
     // ---- lists ----------------------------------------------------------------
@@ -304,10 +301,7 @@ mod tests {
 
     #[test]
     fn test_parse_unexpected_close_paren() {
-        assert_eq!(
-            parse(")").unwrap_err(),
-            ParseError::UnexpectedCloseParen
-        );
+        assert_eq!(parse(")").unwrap_err(), ParseError::UnexpectedCloseParen);
     }
 
     #[test]
