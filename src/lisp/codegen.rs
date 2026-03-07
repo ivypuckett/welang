@@ -244,17 +244,31 @@ fn compile_expr(
         Expr::List(items) if items.is_empty() => Err("cannot evaluate an empty list".to_string()),
 
         Expr::List(items) => match &items[0] {
-            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => compile_arith(
-                builder,
-                module,
-                registry,
-                global_consts,
-                op,
-                &items[1..],
-                locals,
-                next_var,
-            ),
+            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
+                if items.len() != 2 {
+                    return Err(format!(
+                        "'{op}' must be applied to one argument at a time (monadic); \
+                         use curried form, e.g. `(({op} a) b)` instead of `({op} a b)`"
+                    ));
+                }
+                compile_arith(
+                    builder,
+                    module,
+                    registry,
+                    global_consts,
+                    op,
+                    &items[1..],
+                    locals,
+                    next_var,
+                )
+            }
             Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
+                if items.len() != 2 {
+                    return Err(format!(
+                        "'{op}' must be applied to one argument at a time (monadic); \
+                         use curried form, e.g. `(({op} a) b)` instead of `({op} a b)`"
+                    ));
+                }
                 compile_cmp(
                     builder,
                     module,
@@ -322,19 +336,41 @@ fn compile_expr(
             }
             Expr::List(_) => {
                 // Curried application chain: `((f a) b)` → call f(a, b).
-                // Flatten the entire chain and dispatch to compile_call which
-                // will verify the final argument count against the function's arity.
+                // Flatten the entire chain, then route to the right handler so
+                // that built-in operators and user functions are treated uniformly.
                 let (fn_name, all_args) = flatten_curried_call(expr)?;
-                compile_call(
-                    builder,
-                    module,
-                    registry,
-                    global_consts,
-                    &fn_name,
-                    &all_args,
-                    locals,
-                    next_var,
-                )
+                match fn_name.as_str() {
+                    op @ ("+" | "-" | "*" | "/") => compile_arith(
+                        builder,
+                        module,
+                        registry,
+                        global_consts,
+                        op,
+                        &all_args,
+                        locals,
+                        next_var,
+                    ),
+                    op @ ("=" | "<" | ">" | "<=" | ">=") => compile_cmp(
+                        builder,
+                        module,
+                        registry,
+                        global_consts,
+                        op,
+                        &all_args,
+                        locals,
+                        next_var,
+                    ),
+                    _ => compile_call(
+                        builder,
+                        module,
+                        registry,
+                        global_consts,
+                        &fn_name,
+                        &all_args,
+                        locals,
+                        next_var,
+                    ),
+                }
             }
             other => Err(format!("cannot call {other:?} as a function")),
         },
@@ -355,10 +391,12 @@ fn compile_arith(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
 ) -> Result<Value, CompileError> {
-    if args.len() < 2 {
-        return Err(format!("'{}' requires at least 2 arguments", op));
+    if args.len() != 2 {
+        return Err(format!(
+            "'{op}' requires exactly 2 arguments (monadic currying: `(({op} a) b)`)"
+        ));
     }
-    let mut acc = compile_expr(
+    let lhs = compile_expr(
         builder,
         module,
         registry,
@@ -367,25 +405,22 @@ fn compile_arith(
         locals,
         next_var,
     )?;
-    for arg in &args[1..] {
-        let rhs = compile_expr(
-            builder,
-            module,
-            registry,
-            global_consts,
-            arg,
-            locals,
-            next_var,
-        )?;
-        acc = match op {
-            "+" => builder.ins().iadd(acc, rhs),
-            "-" => builder.ins().isub(acc, rhs),
-            "*" => builder.ins().imul(acc, rhs),
-            "/" => builder.ins().sdiv(acc, rhs),
-            _ => unreachable!(),
-        };
-    }
-    Ok(acc)
+    let rhs = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[1],
+        locals,
+        next_var,
+    )?;
+    Ok(match op {
+        "+" => builder.ins().iadd(lhs, rhs),
+        "-" => builder.ins().isub(lhs, rhs),
+        "*" => builder.ins().imul(lhs, rhs),
+        "/" => builder.ins().sdiv(lhs, rhs),
+        _ => unreachable!(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -649,8 +684,9 @@ mod tests {
     #[test]
     fn test_curried_two_arg() {
         // ((add 1) 2) should compile and return 3
+        // Body uses curried builtin: ((+ x) y)
         assert_eq!(
-            run_program("(define (add x y) (+ x y)) (define (main) ((add 1) 2))"),
+            run_program("(define (add x y) ((+ x) y)) (define (main) ((add 1) 2))"),
             3
         );
     }
@@ -658,40 +694,67 @@ mod tests {
     #[test]
     fn test_curried_three_arg() {
         // (((f 1) 2) 3) should compile and return 6
+        // Body uses fully curried builtins
         assert_eq!(
-            run_program("(define (f a b c) (+ a (+ b c))) (define (main) (((f 1) 2) 3))"),
+            run_program("(define (f a b c) ((+ a) ((+ b) c))) (define (main) (((f 1) 2) 3))"),
             6
         );
     }
 
     #[test]
     fn test_curried_mixed_with_builtin() {
-        // ((add 10) (* 3 2)) — curried user call whose argument uses a builtin
+        // ((add 10) ((* 3) 2)) — curried user call with curried builtin argument
         assert_eq!(
-            run_program("(define (add x y) (+ x y)) (define (main) ((add 10) (* 3 2)))"),
+            run_program("(define (add x y) ((+ x) y)) (define (main) ((add 10) ((* 3) 2)))"),
             16
         );
+    }
+
+    #[test]
+    fn test_curried_builtin() {
+        // ((+ 1) 2) = 3 — builtins are also curried
+        assert_eq!(run_program("(define (main) ((+ 1) 2))"), 3);
+    }
+
+    #[test]
+    fn test_curried_builtin_nested() {
+        // ((* 4) ((+ 1) 2)) = 4 * 3 = 12
+        assert_eq!(run_program("(define (main) ((* 4) ((+ 1) 2)))"), 12);
     }
 
     // -- monadic enforcement ---------------------------------------------------
 
     #[test]
-    fn test_multi_arg_call_is_error() {
-        // (add 1 2) for a user-defined function must now be a compile error
-        assert!(compile_src("(define (add x y) (+ x y)) (define (main) (add 1 2))").is_err());
+    fn test_multi_arg_user_call_is_error() {
+        // (add 1 2) for a user-defined function must be a compile error
+        assert!(compile_src("(define (add x y) ((+ x) y)) (define (main) (add 1 2))").is_err());
     }
 
     #[test]
-    fn test_three_arg_call_is_error() {
-        assert!(compile_src("(define (f a b c) (+ a (+ b c))) (define (main) (f 1 2 3))").is_err());
+    fn test_three_arg_user_call_is_error() {
+        assert!(
+            compile_src("(define (f a b c) ((+ a) ((+ b) c))) (define (main) (f 1 2 3))").is_err()
+        );
+    }
+
+    #[test]
+    fn test_multi_arg_builtin_is_error() {
+        // (+ 1 2) at the call site now violates monadic — must use ((+ 1) 2)
+        assert!(compile_src("(define (main) (+ 1 2))").is_err());
+    }
+
+    #[test]
+    fn test_variadic_builtin_is_error() {
+        assert!(compile_src("(define (main) (+ 1 2 3))").is_err());
     }
 
     // -- existing behaviour still works ----------------------------------------
 
     #[test]
     fn test_single_arg_function() {
+        // Single-arg user functions still work; body uses curried builtin
         assert_eq!(
-            run_program("(define (inc x) (+ x 1)) (define (main) (inc 5))"),
+            run_program("(define (inc x) ((+ x) 1)) (define (main) (inc 5))"),
             6
         );
     }
@@ -699,11 +762,5 @@ mod tests {
     #[test]
     fn test_zero_arg_main() {
         assert_eq!(run_program("(define (main) 42)"), 42);
-    }
-
-    #[test]
-    fn test_builtin_multi_arg_still_works() {
-        // Built-in operators are not affected by monadic enforcement
-        assert_eq!(run_program("(define (main) (+ 1 2 3))"), 6);
     }
 }
