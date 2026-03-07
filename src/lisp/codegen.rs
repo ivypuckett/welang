@@ -84,31 +84,29 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     let mut registry: HashMap<String, FuncInfo> = HashMap::new();
 
     for expr in exprs {
-        if let Expr::List(items) = expr {
-            if items.len() >= 2 {
-                if let Expr::Symbol(kw) = &items[0] {
-                    if kw == "define" {
-                        match &items[1] {
-                            Expr::List(sig_items) => {
-                                if let Some(Expr::Symbol(name)) = sig_items.first() {
-                                    let arity = sig_items.len() - 1;
-                                    let is_main = name == "main";
-                                    let sig = make_sig(&module, arity, is_main);
-                                    let id = module
-                                        .declare_function(name, Linkage::Export, &sig)
-                                        .map_err(|e| e.to_string())?;
-                                    registry.insert(name.clone(), FuncInfo { id, arity, is_main });
-                                }
-                            }
-                            Expr::Symbol(name) => {
-                                if let Some(Expr::Number(n)) = items.get(2) {
-                                    global_consts.insert(name.clone(), *n as i64);
-                                }
-                            }
-                            _ => {}
-                        }
+        if let Expr::List(items) = expr
+            && items.len() >= 2
+            && let Expr::Symbol(kw) = &items[0]
+            && kw == "define"
+        {
+            match &items[1] {
+                Expr::List(sig_items) => {
+                    if let Some(Expr::Symbol(name)) = sig_items.first() {
+                        let arity = sig_items.len() - 1;
+                        let is_main = name == "main";
+                        let sig = make_sig(&module, arity, is_main);
+                        let id = module
+                            .declare_function(name, Linkage::Export, &sig)
+                            .map_err(|e| e.to_string())?;
+                        registry.insert(name.clone(), FuncInfo { id, arity, is_main });
                     }
                 }
+                Expr::Symbol(name) => {
+                    if let Some(Expr::Number(n)) = items.get(2) {
+                        global_consts.insert(name.clone(), *n as i64);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -119,22 +117,19 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
 
     // Compile each function body.
     for expr in exprs {
-        if let Expr::List(items) = expr {
-            if items.len() >= 3 {
-                if let Expr::Symbol(kw) = &items[0] {
-                    if kw == "define" {
-                        if let Expr::List(sig_items) = &items[1] {
-                            compile_function(
-                                &mut module,
-                                &registry,
-                                &global_consts,
-                                sig_items,
-                                &items[2..],
-                            )?;
-                        }
-                    }
-                }
-            }
+        if let Expr::List(items) = expr
+            && items.len() >= 3
+            && let Expr::Symbol(kw) = &items[0]
+            && kw == "define"
+            && let Expr::List(sig_items) = &items[1]
+        {
+            compile_function(
+                &mut module,
+                &registry,
+                &global_consts,
+                sig_items,
+                &items[2..],
+            )?;
         }
     }
 
@@ -322,6 +317,7 @@ fn compile_expr(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_arith(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -365,6 +361,7 @@ fn compile_arith(
     Ok(acc)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_cmp(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -512,6 +509,7 @@ fn compile_local_define(
     Ok(val)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_call(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,

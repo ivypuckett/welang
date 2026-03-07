@@ -166,7 +166,7 @@ fn looks_like_number(word: &str) -> bool {
     }
     s.chars()
         .next()
-        .map_or(false, |c| c.is_ascii_digit() || c == '.')
+        .is_some_and(|c| c.is_ascii_digit() || c == '.')
 }
 
 #[cfg(test)]
