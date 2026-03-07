@@ -36,12 +36,9 @@ fn create_module() -> Result<ObjectModule, CompileError> {
         .finish(flags)
         .map_err(|e| e.to_string())?;
 
-    let obj_builder = ObjectBuilder::new(
-        isa,
-        "we_output",
-        cranelift_module::default_libcall_names(),
-    )
-    .map_err(|e| e.to_string())?;
+    let obj_builder =
+        ObjectBuilder::new(isa, "we_output", cranelift_module::default_libcall_names())
+            .map_err(|e| e.to_string())?;
 
     Ok(ObjectModule::new(obj_builder))
 }
@@ -100,10 +97,7 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
                                     let id = module
                                         .declare_function(name, Linkage::Export, &sig)
                                         .map_err(|e| e.to_string())?;
-                                    registry.insert(
-                                        name.clone(),
-                                        FuncInfo { id, arity, is_main },
-                                    );
+                                    registry.insert(name.clone(), FuncInfo { id, arity, is_main });
                                 }
                             }
                             Expr::Symbol(name) => {
@@ -252,23 +246,19 @@ fn compile_expr(
             }
         }
 
-        Expr::List(items) if items.is_empty() => {
-            Err("cannot evaluate an empty list".to_string())
-        }
+        Expr::List(items) if items.is_empty() => Err("cannot evaluate an empty list".to_string()),
 
         Expr::List(items) => match &items[0] {
-            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
-                compile_arith(
-                    builder,
-                    module,
-                    registry,
-                    global_consts,
-                    op,
-                    &items[1..],
-                    locals,
-                    next_var,
-                )
-            }
+            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => compile_arith(
+                builder,
+                module,
+                registry,
+                global_consts,
+                op,
+                &items[1..],
+                locals,
+                next_var,
+            ),
             Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
                 compile_cmp(
                     builder,
@@ -345,11 +335,25 @@ fn compile_arith(
     if args.len() < 2 {
         return Err(format!("'{}' requires at least 2 arguments", op));
     }
-    let mut acc =
-        compile_expr(builder, module, registry, global_consts, &args[0], locals, next_var)?;
+    let mut acc = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[0],
+        locals,
+        next_var,
+    )?;
     for arg in &args[1..] {
-        let rhs =
-            compile_expr(builder, module, registry, global_consts, arg, locals, next_var)?;
+        let rhs = compile_expr(
+            builder,
+            module,
+            registry,
+            global_consts,
+            arg,
+            locals,
+            next_var,
+        )?;
         acc = match op {
             "+" => builder.ins().iadd(acc, rhs),
             "-" => builder.ins().isub(acc, rhs),
@@ -374,10 +378,24 @@ fn compile_cmp(
     if args.len() != 2 {
         return Err(format!("'{}' requires exactly 2 arguments", op));
     }
-    let lhs =
-        compile_expr(builder, module, registry, global_consts, &args[0], locals, next_var)?;
-    let rhs =
-        compile_expr(builder, module, registry, global_consts, &args[1], locals, next_var)?;
+    let lhs = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[0],
+        locals,
+        next_var,
+    )?;
+    let rhs = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[1],
+        locals,
+        next_var,
+    )?;
     let cc = match op {
         "=" => IntCC::Equal,
         "<" => IntCC::SignedLessThan,
@@ -404,8 +422,15 @@ fn compile_if(
         return Err("'if' requires 2 or 3 arguments (condition, then [, else])".to_string());
     }
 
-    let cond =
-        compile_expr(builder, module, registry, global_consts, &args[0], locals, next_var)?;
+    let cond = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[0],
+        locals,
+        next_var,
+    )?;
     let zero = builder.ins().iconst(types::I64, 0);
     let flag = builder.ins().icmp(IntCC::NotEqual, cond, zero);
 
@@ -419,15 +444,30 @@ fn compile_if(
     // then branch
     builder.switch_to_block(then_block);
     builder.seal_block(then_block);
-    let then_val =
-        compile_expr(builder, module, registry, global_consts, &args[1], locals, next_var)?;
+    let then_val = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[1],
+        locals,
+        next_var,
+    )?;
     builder.ins().jump(merge_block, &[then_val]);
 
     // else branch
     builder.switch_to_block(else_block);
     builder.seal_block(else_block);
     let else_val = if args.len() == 3 {
-        compile_expr(builder, module, registry, global_consts, &args[2], locals, next_var)?
+        compile_expr(
+            builder,
+            module,
+            registry,
+            global_consts,
+            &args[2],
+            locals,
+            next_var,
+        )?
     } else {
         builder.ins().iconst(types::I64, 0)
     };
@@ -455,8 +495,15 @@ fn compile_local_define(
         Expr::Symbol(s) => s.clone(),
         _ => return Err("'define' name must be a symbol".to_string()),
     };
-    let val =
-        compile_expr(builder, module, registry, global_consts, &args[1], locals, next_var)?;
+    let val = compile_expr(
+        builder,
+        module,
+        registry,
+        global_consts,
+        &args[1],
+        locals,
+        next_var,
+    )?;
     let var = Variable::from_u32(*next_var as u32);
     *next_var += 1;
     builder.declare_var(var, types::I64);
@@ -490,7 +537,17 @@ fn compile_call(
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .map(|a| compile_expr(builder, module, registry, global_consts, a, locals, next_var))
+        .map(|a| {
+            compile_expr(
+                builder,
+                module,
+                registry,
+                global_consts,
+                a,
+                locals,
+                next_var,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let func_ref = module.declare_func_in_func(info.id, builder.func);
