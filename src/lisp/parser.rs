@@ -28,6 +28,8 @@ pub enum ParseError {
     UnexpectedCloseParen,
     /// A `'` was not followed by an expression.
     MissingQuoteTarget,
+    /// A `name:` function definition was malformed.
+    InvalidFuncDef,
 }
 
 impl std::fmt::Display for ParseError {
@@ -37,6 +39,12 @@ impl std::fmt::Display for ParseError {
             ParseError::UnmatchedOpenParen => write!(f, "unmatched '('"),
             ParseError::UnexpectedCloseParen => write!(f, "unexpected ')'"),
             ParseError::MissingQuoteTarget => write!(f, "quote requires an expression"),
+            ParseError::InvalidFuncDef => {
+                write!(
+                    f,
+                    "invalid function definition: expected 'name: (params) body'"
+                )
+            }
         }
     }
 }
@@ -48,12 +56,56 @@ impl From<LexError> for ParseError {
 }
 
 /// Parse a source string into a list of top-level expressions.
+///
+/// Function definitions use the syntax `name: (params...) body...` and are
+/// desugared into `(define (name params...) body...)` during parsing.
+/// Global constants still use `(define NAME value)`.
 pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     let tokens = tokenize(input)?;
     let mut pos = 0;
     let mut exprs = Vec::new();
 
     while pos < tokens.len() {
+        // New function definition syntax: name: (params...) body...
+        if let Token::Symbol(name) = &tokens[pos]
+            && pos + 1 < tokens.len()
+            && tokens[pos + 1] == Token::Colon
+        {
+            let name = name.clone();
+            pos += 2; // consume name and colon
+
+            // Next must be the parameter list
+            if pos >= tokens.len() || tokens[pos] != Token::LParen {
+                return Err(ParseError::InvalidFuncDef);
+            }
+            let params_expr = parse_expr(&tokens, &mut pos)?;
+            let param_exprs = match params_expr {
+                Expr::List(items) => items,
+                _ => return Err(ParseError::InvalidFuncDef),
+            };
+
+            // Collect body expressions until the next function definition or end of input.
+            let mut body = Vec::new();
+            while pos < tokens.len() {
+                // Look ahead: Symbol followed by Colon signals a new function definition.
+                if matches!(&tokens[pos], Token::Symbol(_))
+                    && pos + 1 < tokens.len()
+                    && tokens[pos + 1] == Token::Colon
+                {
+                    break;
+                }
+                body.push(parse_expr(&tokens, &mut pos)?);
+            }
+
+            // Desugar to (define (name params...) body...)
+            let mut sig = vec![Expr::Symbol(name)];
+            sig.extend(param_exprs);
+            let mut items = vec![Expr::Symbol("define".to_string()), Expr::List(sig)];
+            items.extend(body);
+            exprs.push(Expr::List(items));
+            continue;
+        }
+
         let expr = parse_expr(&tokens, &mut pos)?;
         exprs.push(expr);
     }
@@ -85,6 +137,8 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
         }
 
         Token::RParen => Err(ParseError::UnexpectedCloseParen),
+
+        Token::Colon => Err(ParseError::InvalidFuncDef),
 
         Token::Quote => {
             *pos += 1;
@@ -202,6 +256,7 @@ mod tests {
 
     #[test]
     fn test_parse_define() {
+        // (define NAME value) is still the global constant syntax
         assert_eq!(
             parse("(define x 10)").unwrap(),
             vec![Expr::List(vec![
@@ -209,6 +264,73 @@ mod tests {
                 Expr::Symbol("x".to_string()),
                 Expr::Number(10.0),
             ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_func_def_no_params() {
+        assert_eq!(
+            parse("main: () 0").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("main".to_string())]),
+                Expr::Number(0.0),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_func_def_with_params() {
+        assert_eq!(
+            parse("add: (a b) (+ a b)").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("add".to_string()),
+                    Expr::Symbol("a".to_string()),
+                    Expr::Symbol("b".to_string()),
+                ]),
+                Expr::List(vec![
+                    Expr::Symbol("+".to_string()),
+                    Expr::Symbol("a".to_string()),
+                    Expr::Symbol("b".to_string()),
+                ]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_func_def_multi_body() {
+        assert_eq!(
+            parse("f: () 1 2").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("f".to_string())]),
+                Expr::Number(1.0),
+                Expr::Number(2.0),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_func_defs() {
+        let result = parse("foo: () 1\nbar: () 2").unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("foo".to_string())]),
+                Expr::Number(1.0),
+            ])
+        );
+        assert_eq!(
+            result[1],
+            Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("bar".to_string())]),
+                Expr::Number(2.0),
+            ])
         );
     }
 
@@ -315,5 +437,10 @@ mod tests {
             parse(r#""unterminated"#).unwrap_err(),
             ParseError::Lex(_)
         ));
+    }
+
+    #[test]
+    fn test_parse_invalid_func_def_missing_params() {
+        assert_eq!(parse("foo:").unwrap_err(), ParseError::InvalidFuncDef);
     }
 }

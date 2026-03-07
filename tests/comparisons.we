@@ -1,16 +1,16 @@
 ; Tests all six comparison operators: = < > <= >= and booleans.
-(define (clamp x lo hi)
+clamp: (x lo hi)
   (if (< x lo)
     lo
     (if (> x hi)
       hi
-      x)))
+      x))
 
-(define (eq a b) (= a b))
-(define (lte a b) (<= a b))
-(define (gte a b) (>= a b))
+eq: (a b) (= a b)
+lte: (a b) (<= a b)
+gte: (a b) (>= a b)
 
-(define (main)
+main: ()
   (begin
     (define a (clamp 5 0 10))   ; 5
     (define b (clamp -3 0 10))  ; 0
@@ -18,4 +18,4 @@
     (define d (eq 7 7))         ; 1
     (define e (lte 3 3))        ; 1
     (define f (gte 5 2))        ; 1
-    0))
+    0)

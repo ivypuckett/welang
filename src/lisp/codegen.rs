@@ -64,8 +64,8 @@ fn make_sig(
 /// Compile a slice of top-level AST nodes into an ELF object file (raw bytes).
 ///
 /// Supported top-level forms:
-/// - `(define (name args...) body...)` — function definition
-/// - `(define name number)`            — global numeric constant
+/// - `name: (args...) body...` — function definition
+/// - `(define name number)`    — global numeric constant
 ///
 /// Inside function bodies:
 /// - number / bool literals

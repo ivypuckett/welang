@@ -3,6 +3,7 @@
 pub enum Token {
     LParen,
     RParen,
+    Colon,
     Quote,
     Bool(bool),
     Number(f64),
@@ -56,6 +57,11 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
             ')' => {
                 chars.next();
                 tokens.push(Token::RParen);
+            }
+
+            ':' => {
+                chars.next();
+                tokens.push(Token::Colon);
             }
 
             '\'' => {
@@ -131,7 +137,13 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
             _ => {
                 let mut word = String::new();
                 while let Some(&ch) = chars.peek() {
-                    if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '"' || ch == ';' {
+                    if ch.is_whitespace()
+                        || ch == '('
+                        || ch == ')'
+                        || ch == '"'
+                        || ch == ';'
+                        || ch == ':'
+                    {
                         break;
                     }
                     chars.next();
@@ -300,6 +312,34 @@ mod tests {
                 Token::Symbol("+".to_string()),
                 Token::Number(1.0),
                 Token::Number(2.0),
+                Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_colon() {
+        assert_eq!(
+            tokenize("foo:").unwrap(),
+            vec![Token::Symbol("foo".to_string()), Token::Colon]
+        );
+    }
+
+    #[test]
+    fn test_func_def_tokens() {
+        assert_eq!(
+            tokenize("add: (a b) (+ a b)").unwrap(),
+            vec![
+                Token::Symbol("add".to_string()),
+                Token::Colon,
+                Token::LParen,
+                Token::Symbol("a".to_string()),
+                Token::Symbol("b".to_string()),
+                Token::RParen,
+                Token::LParen,
+                Token::Symbol("+".to_string()),
+                Token::Symbol("a".to_string()),
+                Token::Symbol("b".to_string()),
                 Token::RParen,
             ]
         );

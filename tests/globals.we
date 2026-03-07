@@ -3,14 +3,14 @@
 (define TEN 10)
 (define HUNDRED 100)
 
-(define (scale x factor)
+scale: (x factor)
   (begin
     (define result (* x factor))
-    result))
+    result)
 
-(define (main)
+main: ()
   (begin
     (define a (scale TEN TEN))        ; 100
     (define b (scale HUNDRED TEN))    ; 1000
     (define c (+ a b ZERO))           ; 1100
-    0))
+    0)
