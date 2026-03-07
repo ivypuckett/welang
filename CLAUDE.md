@@ -11,3 +11,12 @@ cargo run    # Run the CLI
 cargo build  # Build the project
 cargo test   # Run the tests
 ```
+
+## Before pushing
+
+Always run these and fix any issues before committing/pushing:
+
+```sh
+cargo fmt                  # Format code
+cargo clippy -- -D warnings  # Lint (all warnings are errors)
+```
