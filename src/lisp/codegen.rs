@@ -299,17 +299,44 @@ fn compile_expr(
                 }
                 Ok(val)
             }
-            Expr::Symbol(name) => compile_call(
-                builder,
-                module,
-                registry,
-                global_consts,
-                name,
-                &items[1..],
-                locals,
-                next_var,
-            ),
-            other => Err(format!("cannot call {:?} as a function", other)),
+            Expr::Symbol(name) => {
+                // Enforce monadic calling convention: user-defined functions
+                // must be applied to exactly one argument at a time.
+                // Use curried form `((f a) b)` instead of `(f a b)`.
+                if registry.contains_key(name.as_str()) && items.len() > 2 {
+                    return Err(format!(
+                        "function '{name}' must be called with one argument at a time \
+                         (monadic); use curried form, e.g. `((f a) b)` instead of `(f a b)`"
+                    ));
+                }
+                compile_call(
+                    builder,
+                    module,
+                    registry,
+                    global_consts,
+                    name,
+                    &items[1..],
+                    locals,
+                    next_var,
+                )
+            }
+            Expr::List(_) => {
+                // Curried application chain: `((f a) b)` → call f(a, b).
+                // Flatten the entire chain and dispatch to compile_call which
+                // will verify the final argument count against the function's arity.
+                let (fn_name, all_args) = flatten_curried_call(expr)?;
+                compile_call(
+                    builder,
+                    module,
+                    registry,
+                    global_consts,
+                    &fn_name,
+                    &all_args,
+                    locals,
+                    next_var,
+                )
+            }
+            other => Err(format!("cannot call {other:?} as a function")),
         },
 
         Expr::Quote(_) => Err("quoted expressions are not supported in compiled code".to_string()),
@@ -509,6 +536,27 @@ fn compile_local_define(
     Ok(val)
 }
 
+/// Flatten a curried call chain into `(function_name, all_arguments)`.
+///
+/// Examples:
+/// - `(f a)`         → `("f", [a])`
+/// - `((f a) b)`     → `("f", [a, b])`
+/// - `(((f a) b) c)` → `("f", [a, b, c])`
+fn flatten_curried_call(expr: &Expr) -> Result<(String, Vec<Expr>), CompileError> {
+    match expr {
+        Expr::List(items) if !items.is_empty() => match &items[0] {
+            Expr::Symbol(name) => Ok((name.clone(), items[1..].to_vec())),
+            Expr::List(_) => {
+                let (name, mut inner_args) = flatten_curried_call(&items[0])?;
+                inner_args.extend_from_slice(&items[1..]);
+                Ok((name, inner_args))
+            }
+            other => Err(format!("cannot call {other:?} as a function")),
+        },
+        other => Err(format!("cannot call {other:?} as a function")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_call(
     builder: &mut FunctionBuilder,
@@ -560,5 +608,102 @@ fn compile_call(
             Ok(builder.ins().sextend(types::I64, r))
         }
         Some(r) => Ok(r),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::parser::parse;
+    use std::process::Command;
+
+    fn compile_src(src: &str) -> Result<Vec<u8>, CompileError> {
+        let exprs = parse(src).expect("parse failed");
+        compile(&exprs)
+    }
+
+    fn run_program(src: &str) -> i32 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        src.hash(&mut h);
+        let id = h.finish();
+        let obj_path = format!("/tmp/we_test_{id}.o");
+        let bin_path = format!("/tmp/we_test_{id}");
+        let obj = compile_src(src).expect("compile failed");
+        std::fs::write(&obj_path, &obj).expect("write obj failed");
+        let link_status = Command::new("cc")
+            .args([&obj_path, "-o", &bin_path, "-no-pie"])
+            .status()
+            .expect("linker failed");
+        assert!(link_status.success(), "linking failed");
+        Command::new(&bin_path)
+            .status()
+            .expect("run failed")
+            .code()
+            .unwrap_or(-1)
+    }
+
+    // -- curried call syntax ---------------------------------------------------
+
+    #[test]
+    fn test_curried_two_arg() {
+        // ((add 1) 2) should compile and return 3
+        assert_eq!(
+            run_program("(define (add x y) (+ x y)) (define (main) ((add 1) 2))"),
+            3
+        );
+    }
+
+    #[test]
+    fn test_curried_three_arg() {
+        // (((f 1) 2) 3) should compile and return 6
+        assert_eq!(
+            run_program("(define (f a b c) (+ a (+ b c))) (define (main) (((f 1) 2) 3))"),
+            6
+        );
+    }
+
+    #[test]
+    fn test_curried_mixed_with_builtin() {
+        // ((add 10) (* 3 2)) — curried user call whose argument uses a builtin
+        assert_eq!(
+            run_program("(define (add x y) (+ x y)) (define (main) ((add 10) (* 3 2)))"),
+            16
+        );
+    }
+
+    // -- monadic enforcement ---------------------------------------------------
+
+    #[test]
+    fn test_multi_arg_call_is_error() {
+        // (add 1 2) for a user-defined function must now be a compile error
+        assert!(compile_src("(define (add x y) (+ x y)) (define (main) (add 1 2))").is_err());
+    }
+
+    #[test]
+    fn test_three_arg_call_is_error() {
+        assert!(compile_src("(define (f a b c) (+ a (+ b c))) (define (main) (f 1 2 3))").is_err());
+    }
+
+    // -- existing behaviour still works ----------------------------------------
+
+    #[test]
+    fn test_single_arg_function() {
+        assert_eq!(
+            run_program("(define (inc x) (+ x 1)) (define (main) (inc 5))"),
+            6
+        );
+    }
+
+    #[test]
+    fn test_zero_arg_main() {
+        assert_eq!(run_program("(define (main) 42)"), 42);
+    }
+
+    #[test]
+    fn test_builtin_multi_arg_still_works() {
+        // Built-in operators are not affected by monadic enforcement
+        assert_eq!(run_program("(define (main) (+ 1 2 3))"), 6);
     }
 }
