@@ -1,0 +1,2 @@
+; Minimal welang program — entry point returns 0.
+(define (main) 0)

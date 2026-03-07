@@ -20,3 +20,10 @@ Always run these and fix any issues before committing/pushing:
 cargo fmt                  # Format code
 cargo clippy -- -D warnings  # Lint (all warnings are errors)
 ```
+
+Also compile every file in `tests/` to make sure none of them regress:
+
+```sh
+cargo build
+for f in tests/*.we; do echo "Compiling $f ..."; ./target/debug/we "$f"; done
+```
