@@ -12,12 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27.1.2"
-          gleam-version: "1.14.0"
-          rebar3-version: "3"
-          # elixir-version: "1"
-      - run: gleam deps download
-      - run: gleam test
-      - run: gleam format --check src test
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
