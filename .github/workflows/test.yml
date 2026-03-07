@@ -16,3 +16,11 @@ jobs:
       - run: cargo test
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
+      - name: Build we compiler
+        run: cargo build
+      - name: Compile tests/*.we programs
+        run: |
+          for f in tests/*.we; do
+            echo "Compiling $f ..."
+            ./target/debug/we "$f"
+          done
