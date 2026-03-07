@@ -1,1 +1,9 @@
 /target
+
+# Compiled binaries produced by `we` when testing .we files
+/arithmetic
+/comparisons
+/conditionals
+/globals
+/hello
+/recursion
