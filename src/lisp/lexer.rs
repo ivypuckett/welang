@@ -7,6 +7,7 @@ pub enum Token {
     RBracket,
     Comma,
     Colon,
+    Pipe,
     Quote,
     Bool(bool),
     Number(f64),
@@ -73,6 +74,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
             ':' => {
                 chars.next();
                 tokens.push(Token::Colon);
+            }
+            '|' => {
+                chars.next();
+                tokens.push(Token::Pipe);
             }
             '\'' => {
                 chars.next();
@@ -153,6 +158,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                         || ch == '"'
                         || ch == ';'
                         || ch == ':'
+                        || ch == '|'
                     {
                         break;
                     }

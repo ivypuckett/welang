@@ -29,6 +29,10 @@ pub enum ParseError {
     InvalidFuncDef,
     /// A top-level expression appeared outside of a function definition.
     UnexpectedTopLevel,
+    /// A `|` pipe operator appeared where no expression is valid.
+    UnexpectedPipe,
+    /// A pipe segment was empty (e.g. `(| f)` or `(f |)`).
+    EmptyPipeSegment,
 }
 
 impl std::fmt::Display for ParseError {
@@ -47,6 +51,13 @@ impl std::fmt::Display for ParseError {
                 f,
                 "unexpected expression at top level: only function definitions are allowed"
             ),
+            ParseError::UnexpectedPipe => write!(f, "unexpected '|' outside of a pipe expression"),
+            ParseError::EmptyPipeSegment => {
+                write!(
+                    f,
+                    "empty pipe segment: '|' requires an expression on each side"
+                )
+            }
         }
     }
 }
@@ -142,11 +153,9 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
                 return Ok(Expr::Rename(rename, Box::new(body)));
             }
 
-            // Single-element `(expr)` — grouping, not a call.
-            // Peek ahead: if the next token closes immediately after one expr,
-            // we still parse it as a 1-element list and let codegen treat it
-            // as grouping.
-            let mut list = Vec::new();
+            // Parse list contents, collecting pipe-separated segments.
+            // `(a | b | c)` desugars to `(c (b a))`.
+            let mut segments: Vec<Vec<Expr>> = vec![Vec::new()];
             loop {
                 if *pos >= tokens.len() {
                     return Err(ParseError::UnmatchedOpenParen);
@@ -155,9 +164,29 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
                     *pos += 1;
                     break;
                 }
-                list.push(parse_expr(tokens, pos)?);
+                if tokens[*pos] == Token::Pipe {
+                    *pos += 1;
+                    segments.push(Vec::new());
+                    continue;
+                }
+                let expr = parse_expr(tokens, pos)?;
+                segments.last_mut().unwrap().push(expr);
             }
-            Ok(Expr::List(list))
+
+            if segments.len() == 1 {
+                // No pipe operator: return a normal list.
+                Ok(Expr::List(segments.into_iter().next().unwrap()))
+            } else {
+                // Desugar pipeline left-to-right: (a | b | c) → (c (b a)).
+                let mut iter = segments.into_iter();
+                let first = iter.next().unwrap();
+                let mut acc = segment_to_expr(first)?;
+                for seg in iter {
+                    let func = segment_to_expr(seg)?;
+                    acc = Expr::List(vec![func, acc]);
+                }
+                Ok(acc)
+            }
         }
 
         Token::LBracket => {
@@ -184,6 +213,7 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
         Token::RBracket => Err(ParseError::UnexpectedCloseBracket),
         Token::Comma => Err(ParseError::UnexpectedCloseBracket), // misplaced comma
         Token::Colon => Err(ParseError::InvalidFuncDef),
+        Token::Pipe => Err(ParseError::UnexpectedPipe),
 
         Token::Quote => {
             *pos += 1;
@@ -217,6 +247,18 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
             *pos += 1;
             Ok(Expr::Symbol(s))
         }
+    }
+}
+
+/// Convert a pipe segment (a list of already-parsed sub-expressions) into a
+/// single `Expr`.  A segment with one item is that item; a segment with
+/// multiple items is wrapped in a `List` (i.e. a regular function call).
+/// An empty segment is a parse error.
+fn segment_to_expr(items: Vec<Expr>) -> Result<Expr, ParseError> {
+    match items.len() {
+        0 => Err(ParseError::EmptyPipeSegment),
+        1 => Ok(items.into_iter().next().unwrap()),
+        _ => Ok(Expr::List(items)),
     }
 }
 
@@ -417,6 +459,95 @@ mod tests {
                 ]),
                 Expr::Number(0.0),
             ])]
+        );
+    }
+
+    // ---- pipe operator -------------------------------------------------------
+
+    #[test]
+    fn test_simple_pipe() {
+        // `f: (x | double)` desugars to `f: (double x)`
+        assert_eq!(
+            parse("f: (x | double)").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::List(vec![
+                    Expr::Symbol("double".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_chained_pipe() {
+        // `f: (x | double | double)` desugars to `f: (double (double x))`
+        assert_eq!(
+            parse("f: (x | double | double)").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::List(vec![
+                    Expr::Symbol("double".to_string()),
+                    Expr::List(vec![
+                        Expr::Symbol("double".to_string()),
+                        Expr::Symbol("x".to_string()),
+                    ]),
+                ]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_pipe_with_call_on_left() {
+        // `f: (double x | inc)` desugars to `f: (inc (double x))`
+        assert_eq!(
+            parse("f: (double x | inc)").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::List(vec![
+                    Expr::Symbol("inc".to_string()),
+                    Expr::List(vec![
+                        Expr::Symbol("double".to_string()),
+                        Expr::Symbol("x".to_string()),
+                    ]),
+                ]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_pipe_empty_segment_error() {
+        assert_eq!(
+            parse("f: (x | | double)").unwrap_err(),
+            ParseError::EmptyPipeSegment
+        );
+    }
+
+    #[test]
+    fn test_pipe_leading_pipe_error() {
+        assert_eq!(
+            parse("f: (| double)").unwrap_err(),
+            ParseError::EmptyPipeSegment
+        );
+    }
+
+    #[test]
+    fn test_pipe_trailing_pipe_error() {
+        assert_eq!(
+            parse("f: (double |)").unwrap_err(),
+            ParseError::EmptyPipeSegment
         );
     }
 }
