@@ -1,16 +1,4 @@
-; Tests global numeric constants and local define bindings.
-(define ZERO 0)
-(define TEN 10)
-(define HUNDRED 100)
+; Tests functions used as constants and local computation.
+scale: (x factor) (* x factor)
 
-scale: (x factor)
-  (begin
-    (define result (* x factor))
-    result)
-
-main: ()
-  (begin
-    (define a (scale TEN TEN))        ; 100
-    (define b (scale HUNDRED TEN))    ; 1000
-    (define c (+ a b ZERO))           ; 1100
-    0)
+main: () (scale 10 10)

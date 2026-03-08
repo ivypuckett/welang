@@ -6,7 +6,7 @@ welang is a programming language implemented in Rust. The CLI binary is named `w
 
 ## Syntax
 
-Functions are defined with `name: (params) body`:
+All top-level definitions use `name: (params) body`:
 
 ```
 ; no-argument function
@@ -15,20 +15,16 @@ main: () 0
 ; function with parameters
 add: (a b) (+ a b)
 
-; multi-expression body
+; single-expression body (bodies are monadic — exactly one expression)
 factorial: (n)
   (if (<= n 1)
     1
     (* n (factorial (- n 1))))
 ```
 
-Global numeric constants still use `(define NAME value)`:
-
-```
-(define PI 3)
-```
-
-Inside function bodies, local variable bindings use `(define name expr)`.
+There is no `define` keyword. Every definition is a function definition.
+Bodies are **monadic**: exactly one expression follows the parameter list.
+Anything else at the top level is a compile-time error.
 
 ## Development
 

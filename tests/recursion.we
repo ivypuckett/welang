@@ -9,9 +9,4 @@ fib: (n)
     n
     (+ (fib (- n 1)) (fib (- n 2))))
 
-main: ()
-  (begin
-    (define f5 (factorial 5))  ; 120
-    (define f0 (factorial 0))  ; 1  (base case: <= 1)
-    (define g7 (fib 7))        ; 13
-    0)
+main: () (factorial 5)

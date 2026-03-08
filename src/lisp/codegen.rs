@@ -64,23 +64,20 @@ fn make_sig(
 /// Compile a slice of top-level AST nodes into an ELF object file (raw bytes).
 ///
 /// Supported top-level forms:
-/// - `name: (args...) body...` — function definition
-/// - `(define name number)`    — global numeric constant
+/// - `name: (args...) body` — function definition (monadic body)
 ///
 /// Inside function bodies:
 /// - number / bool literals
-/// - symbol references (parameters, locals, global constants)
+/// - symbol references (parameters)
 /// - `(+ - * / a b ...)` — arithmetic
 /// - `(= < > <= >= a b)` — comparisons (return 0 or 1)
 /// - `(if cond then [else])` — conditional
-/// - `(define name expr)`  — local variable binding
 /// - `(begin e1 e2 ...)`   — sequence, returns last value
 /// - `(f arg ...)`         — function call
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     let mut module = create_module()?;
 
-    // Collect simple global constants and declare all top-level functions.
-    let mut global_consts: HashMap<String, i64> = HashMap::new();
+    // Declare all top-level functions.
     let mut registry: HashMap<String, FuncInfo> = HashMap::new();
 
     for expr in exprs {
@@ -88,26 +85,16 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             && items.len() >= 2
             && let Expr::Symbol(kw) = &items[0]
             && kw == "define"
+            && let Expr::List(sig_items) = &items[1]
+            && let Some(Expr::Symbol(name)) = sig_items.first()
         {
-            match &items[1] {
-                Expr::List(sig_items) => {
-                    if let Some(Expr::Symbol(name)) = sig_items.first() {
-                        let arity = sig_items.len() - 1;
-                        let is_main = name == "main";
-                        let sig = make_sig(&module, arity, is_main);
-                        let id = module
-                            .declare_function(name, Linkage::Export, &sig)
-                            .map_err(|e| e.to_string())?;
-                        registry.insert(name.clone(), FuncInfo { id, arity, is_main });
-                    }
-                }
-                Expr::Symbol(name) => {
-                    if let Some(Expr::Number(n)) = items.get(2) {
-                        global_consts.insert(name.clone(), *n as i64);
-                    }
-                }
-                _ => {}
-            }
+            let arity = sig_items.len() - 1;
+            let is_main = name == "main";
+            let sig = make_sig(&module, arity, is_main);
+            let id = module
+                .declare_function(name, Linkage::Export, &sig)
+                .map_err(|e| e.to_string())?;
+            registry.insert(name.clone(), FuncInfo { id, arity, is_main });
         }
     }
 
@@ -123,13 +110,7 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             && kw == "define"
             && let Expr::List(sig_items) = &items[1]
         {
-            compile_function(
-                &mut module,
-                &registry,
-                &global_consts,
-                sig_items,
-                &items[2..],
-            )?;
+            compile_function(&mut module, &registry, sig_items, &items[2..])?;
         }
     }
 
@@ -140,7 +121,6 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
 fn compile_function(
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     sig_items: &[Expr],
     body: &[Expr],
 ) -> Result<(), CompileError> {
@@ -193,7 +173,6 @@ fn compile_function(
                 &mut builder,
                 module,
                 registry,
-                global_consts,
                 expr,
                 &mut locals,
                 &mut next_var,
@@ -221,7 +200,6 @@ fn compile_expr(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     expr: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
@@ -234,8 +212,6 @@ fn compile_expr(
         Expr::Symbol(name) => {
             if let Some(&var) = locals.get(name.as_str()) {
                 Ok(builder.use_var(var))
-            } else if let Some(&val) = global_consts.get(name.as_str()) {
-                Ok(builder.ins().iconst(types::I64, val))
             } else {
                 Err(format!("undefined variable: {}", name))
             }
@@ -244,58 +220,19 @@ fn compile_expr(
         Expr::List(items) if items.is_empty() => Err("cannot evaluate an empty list".to_string()),
 
         Expr::List(items) => match &items[0] {
-            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => compile_arith(
-                builder,
-                module,
-                registry,
-                global_consts,
-                op,
-                &items[1..],
-                locals,
-                next_var,
-            ),
-            Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
-                compile_cmp(
-                    builder,
-                    module,
-                    registry,
-                    global_consts,
-                    op,
-                    &items[1..],
-                    locals,
-                    next_var,
-                )
+            Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
+                compile_arith(builder, module, registry, op, &items[1..], locals, next_var)
             }
-            Expr::Symbol(kw) if kw == "if" => compile_if(
-                builder,
-                module,
-                registry,
-                global_consts,
-                &items[1..],
-                locals,
-                next_var,
-            ),
-            Expr::Symbol(kw) if kw == "define" => compile_local_define(
-                builder,
-                module,
-                registry,
-                global_consts,
-                &items[1..],
-                locals,
-                next_var,
-            ),
+            Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
+                compile_cmp(builder, module, registry, op, &items[1..], locals, next_var)
+            }
+            Expr::Symbol(kw) if kw == "if" => {
+                compile_if(builder, module, registry, &items[1..], locals, next_var)
+            }
             Expr::Symbol(kw) if kw == "begin" => {
                 let mut val = builder.ins().iconst(types::I64, 0);
                 for e in &items[1..] {
-                    val = compile_expr(
-                        builder,
-                        module,
-                        registry,
-                        global_consts,
-                        e,
-                        locals,
-                        next_var,
-                    )?;
+                    val = compile_expr(builder, module, registry, e, locals, next_var)?;
                 }
                 Ok(val)
             }
@@ -303,7 +240,6 @@ fn compile_expr(
                 builder,
                 module,
                 registry,
-                global_consts,
                 name,
                 &items[1..],
                 locals,
@@ -317,12 +253,10 @@ fn compile_expr(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_arith(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     op: &str,
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
@@ -331,25 +265,9 @@ fn compile_arith(
     if args.len() < 2 {
         return Err(format!("'{}' requires at least 2 arguments", op));
     }
-    let mut acc = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[0],
-        locals,
-        next_var,
-    )?;
+    let mut acc = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
     for arg in &args[1..] {
-        let rhs = compile_expr(
-            builder,
-            module,
-            registry,
-            global_consts,
-            arg,
-            locals,
-            next_var,
-        )?;
+        let rhs = compile_expr(builder, module, registry, arg, locals, next_var)?;
         acc = match op {
             "+" => builder.ins().iadd(acc, rhs),
             "-" => builder.ins().isub(acc, rhs),
@@ -361,12 +279,10 @@ fn compile_arith(
     Ok(acc)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_cmp(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     op: &str,
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
@@ -375,24 +291,8 @@ fn compile_cmp(
     if args.len() != 2 {
         return Err(format!("'{}' requires exactly 2 arguments", op));
     }
-    let lhs = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[0],
-        locals,
-        next_var,
-    )?;
-    let rhs = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[1],
-        locals,
-        next_var,
-    )?;
+    let lhs = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
+    let rhs = compile_expr(builder, module, registry, &args[1], locals, next_var)?;
     let cc = match op {
         "=" => IntCC::Equal,
         "<" => IntCC::SignedLessThan,
@@ -410,7 +310,6 @@ fn compile_if(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
@@ -419,15 +318,7 @@ fn compile_if(
         return Err("'if' requires 2 or 3 arguments (condition, then [, else])".to_string());
     }
 
-    let cond = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[0],
-        locals,
-        next_var,
-    )?;
+    let cond = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
     let zero = builder.ins().iconst(types::I64, 0);
     let flag = builder.ins().icmp(IntCC::NotEqual, cond, zero);
 
@@ -441,30 +332,14 @@ fn compile_if(
     // then branch
     builder.switch_to_block(then_block);
     builder.seal_block(then_block);
-    let then_val = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[1],
-        locals,
-        next_var,
-    )?;
+    let then_val = compile_expr(builder, module, registry, &args[1], locals, next_var)?;
     builder.ins().jump(merge_block, &[then_val]);
 
     // else branch
     builder.switch_to_block(else_block);
     builder.seal_block(else_block);
     let else_val = if args.len() == 3 {
-        compile_expr(
-            builder,
-            module,
-            registry,
-            global_consts,
-            &args[2],
-            locals,
-            next_var,
-        )?
+        compile_expr(builder, module, registry, &args[2], locals, next_var)?
     } else {
         builder.ins().iconst(types::I64, 0)
     };
@@ -476,45 +351,10 @@ fn compile_if(
     Ok(builder.block_params(merge_block)[0])
 }
 
-fn compile_local_define(
-    builder: &mut FunctionBuilder,
-    module: &mut ObjectModule,
-    registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
-    args: &[Expr],
-    locals: &mut HashMap<String, Variable>,
-    next_var: &mut usize,
-) -> Result<Value, CompileError> {
-    if args.len() != 2 {
-        return Err("'define' inside a function requires a name and a value".to_string());
-    }
-    let name = match &args[0] {
-        Expr::Symbol(s) => s.clone(),
-        _ => return Err("'define' name must be a symbol".to_string()),
-    };
-    let val = compile_expr(
-        builder,
-        module,
-        registry,
-        global_consts,
-        &args[1],
-        locals,
-        next_var,
-    )?;
-    let var = Variable::from_u32(*next_var as u32);
-    *next_var += 1;
-    builder.declare_var(var, types::I64);
-    builder.def_var(var, val);
-    locals.insert(name, var);
-    Ok(val)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn compile_call(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    global_consts: &HashMap<String, i64>,
     name: &str,
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
@@ -535,17 +375,7 @@ fn compile_call(
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .map(|a| {
-            compile_expr(
-                builder,
-                module,
-                registry,
-                global_consts,
-                a,
-                locals,
-                next_var,
-            )
-        })
+        .map(|a| compile_expr(builder, module, registry, a, locals, next_var))
         .collect::<Result<Vec<_>, _>>()?;
 
     let func_ref = module.declare_func_in_func(info.id, builder.func);

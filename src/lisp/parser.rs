@@ -30,6 +30,8 @@ pub enum ParseError {
     MissingQuoteTarget,
     /// A `name:` function definition was malformed.
     InvalidFuncDef,
+    /// A top-level expression appeared outside of a function definition.
+    UnexpectedTopLevel,
 }
 
 impl std::fmt::Display for ParseError {
@@ -45,6 +47,12 @@ impl std::fmt::Display for ParseError {
                     "invalid function definition: expected 'name: (params) body'"
                 )
             }
+            ParseError::UnexpectedTopLevel => {
+                write!(
+                    f,
+                    "unexpected expression at top level: only function definitions are allowed"
+                )
+            }
         }
     }
 }
@@ -55,59 +63,63 @@ impl From<LexError> for ParseError {
     }
 }
 
-/// Parse a source string into a list of top-level expressions.
+/// Returns true if the token stream at `pos` starts a new function definition.
+fn is_func_def_start(tokens: &[Token], pos: usize) -> bool {
+    matches!(&tokens[pos], Token::Symbol(_))
+        && pos + 1 < tokens.len()
+        && tokens[pos + 1] == Token::Colon
+}
+
+/// Parse a source string into a list of top-level function definitions.
 ///
-/// Function definitions use the syntax `name: (params...) body...` and are
-/// desugared into `(define (name params...) body...)` during parsing.
-/// Global constants still use `(define NAME value)`.
+/// Only function definitions are allowed at the top level:
+///   `name: (params...) body`
+///
+/// The body is a single expression (monadic). Any token that cannot start a
+/// new function definition after the body is a compile-time error.
 pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     let tokens = tokenize(input)?;
     let mut pos = 0;
     let mut exprs = Vec::new();
 
     while pos < tokens.len() {
-        // New function definition syntax: name: (params...) body...
-        if let Token::Symbol(name) = &tokens[pos]
-            && pos + 1 < tokens.len()
-            && tokens[pos + 1] == Token::Colon
-        {
-            let name = name.clone();
-            pos += 2; // consume name and colon
-
-            // Next must be the parameter list
-            if pos >= tokens.len() || tokens[pos] != Token::LParen {
-                return Err(ParseError::InvalidFuncDef);
-            }
-            let params_expr = parse_expr(&tokens, &mut pos)?;
-            let param_exprs = match params_expr {
-                Expr::List(items) => items,
-                _ => return Err(ParseError::InvalidFuncDef),
-            };
-
-            // Collect body expressions until the next function definition or end of input.
-            let mut body = Vec::new();
-            while pos < tokens.len() {
-                // Look ahead: Symbol followed by Colon signals a new function definition.
-                if matches!(&tokens[pos], Token::Symbol(_))
-                    && pos + 1 < tokens.len()
-                    && tokens[pos + 1] == Token::Colon
-                {
-                    break;
-                }
-                body.push(parse_expr(&tokens, &mut pos)?);
-            }
-
-            // Desugar to (define (name params...) body...)
-            let mut sig = vec![Expr::Symbol(name)];
-            sig.extend(param_exprs);
-            let mut items = vec![Expr::Symbol("define".to_string()), Expr::List(sig)];
-            items.extend(body);
-            exprs.push(Expr::List(items));
-            continue;
+        // Top level must always be a function definition.
+        if !is_func_def_start(&tokens, pos) {
+            return Err(ParseError::UnexpectedTopLevel);
         }
 
-        let expr = parse_expr(&tokens, &mut pos)?;
-        exprs.push(expr);
+        let name = match &tokens[pos] {
+            Token::Symbol(s) => s.clone(),
+            _ => unreachable!(),
+        };
+        pos += 2; // consume name and colon
+
+        // Next must be the parameter list.
+        if pos >= tokens.len() || tokens[pos] != Token::LParen {
+            return Err(ParseError::InvalidFuncDef);
+        }
+        let params_expr = parse_expr(&tokens, &mut pos)?;
+        let param_exprs = match params_expr {
+            Expr::List(items) => items,
+            _ => return Err(ParseError::InvalidFuncDef),
+        };
+
+        // Body is exactly one expression.
+        if pos >= tokens.len() || is_func_def_start(&tokens, pos) {
+            return Err(ParseError::InvalidFuncDef);
+        }
+        let body = parse_expr(&tokens, &mut pos)?;
+
+        // After the body, the next token (if any) must start another func def.
+        if pos < tokens.len() && !is_func_def_start(&tokens, pos) {
+            return Err(ParseError::UnexpectedTopLevel);
+        }
+
+        // Desugar to (define (name params...) body) for codegen.
+        let mut sig = vec![Expr::Symbol(name)];
+        sig.extend(param_exprs);
+        let items = vec![Expr::Symbol("define".to_string()), Expr::List(sig), body];
+        exprs.push(Expr::List(items));
     }
 
     Ok(exprs)
@@ -183,89 +195,17 @@ mod tests {
 
     #[test]
     fn test_parse_number_integer() {
-        assert_eq!(parse("42").unwrap(), vec![Expr::Number(42.0)]);
-    }
-
-    #[test]
-    fn test_parse_number_float() {
-        assert_eq!(parse("3.14").unwrap(), vec![Expr::Number(3.14)]);
-    }
-
-    #[test]
-    fn test_parse_negative_number() {
-        assert_eq!(parse("-7").unwrap(), vec![Expr::Number(-7.0)]);
-    }
-
-    #[test]
-    fn test_parse_bool_true() {
-        assert_eq!(parse("#t").unwrap(), vec![Expr::Bool(true)]);
-    }
-
-    #[test]
-    fn test_parse_bool_false() {
-        assert_eq!(parse("#f").unwrap(), vec![Expr::Bool(false)]);
-    }
-
-    #[test]
-    fn test_parse_string() {
-        assert_eq!(
-            parse(r#""hello world""#).unwrap(),
-            vec![Expr::Str("hello world".to_string())]
-        );
+        // Numbers are only valid inside function bodies; bare numbers at
+        // top level are rejected.
+        assert_eq!(parse("42").unwrap_err(), ParseError::UnexpectedTopLevel);
     }
 
     #[test]
     fn test_parse_symbol() {
-        assert_eq!(parse("foo").unwrap(), vec![Expr::Symbol("foo".to_string())]);
+        assert_eq!(parse("foo").unwrap_err(), ParseError::UnexpectedTopLevel);
     }
 
-    // ---- lists ----------------------------------------------------------------
-
-    #[test]
-    fn test_parse_empty_list() {
-        assert_eq!(parse("()").unwrap(), vec![Expr::List(vec![])]);
-    }
-
-    #[test]
-    fn test_parse_simple_call() {
-        assert_eq!(
-            parse("(+ 1 2)").unwrap(),
-            vec![Expr::List(vec![
-                Expr::Symbol("+".to_string()),
-                Expr::Number(1.0),
-                Expr::Number(2.0),
-            ])]
-        );
-    }
-
-    #[test]
-    fn test_parse_nested_lists() {
-        assert_eq!(
-            parse("(+ (* 2 3) 4)").unwrap(),
-            vec![Expr::List(vec![
-                Expr::Symbol("+".to_string()),
-                Expr::List(vec![
-                    Expr::Symbol("*".to_string()),
-                    Expr::Number(2.0),
-                    Expr::Number(3.0),
-                ]),
-                Expr::Number(4.0),
-            ])]
-        );
-    }
-
-    #[test]
-    fn test_parse_define() {
-        // (define NAME value) is still the global constant syntax
-        assert_eq!(
-            parse("(define x 10)").unwrap(),
-            vec![Expr::List(vec![
-                Expr::Symbol("define".to_string()),
-                Expr::Symbol("x".to_string()),
-                Expr::Number(10.0),
-            ])]
-        );
-    }
+    // ---- func defs ------------------------------------------------------------
 
     #[test]
     fn test_parse_func_def_no_params() {
@@ -300,19 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_func_def_multi_body() {
-        assert_eq!(
-            parse("f: () 1 2").unwrap(),
-            vec![Expr::List(vec![
-                Expr::Symbol("define".to_string()),
-                Expr::List(vec![Expr::Symbol("f".to_string())]),
-                Expr::Number(1.0),
-                Expr::Number(2.0),
-            ])]
-        );
-    }
-
-    #[test]
     fn test_parse_multiple_func_defs() {
         let result = parse("foo: () 1\nbar: () 2").unwrap();
         assert_eq!(result.len(), 2);
@@ -336,12 +263,24 @@ mod tests {
 
     #[test]
     fn test_parse_lambda() {
+        // (lambda ...) is a valid single-expression body
         assert_eq!(
-            parse("(lambda (x) x)").unwrap(),
+            parse("f: (x) (lambda (y) (+ x y))").unwrap(),
             vec![Expr::List(vec![
-                Expr::Symbol("lambda".to_string()),
-                Expr::List(vec![Expr::Symbol("x".to_string())]),
-                Expr::Symbol("x".to_string()),
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::List(vec![
+                    Expr::Symbol("lambda".to_string()),
+                    Expr::List(vec![Expr::Symbol("y".to_string())]),
+                    Expr::List(vec![
+                        Expr::Symbol("+".to_string()),
+                        Expr::Symbol("x".to_string()),
+                        Expr::Symbol("y".to_string()),
+                    ]),
+                ]),
             ])]
         );
     }
@@ -349,13 +288,54 @@ mod tests {
     #[test]
     fn test_parse_if() {
         assert_eq!(
-            parse("(if #t 1 2)").unwrap(),
+            parse("f: () (if #t 1 2)").unwrap(),
             vec![Expr::List(vec![
-                Expr::Symbol("if".to_string()),
-                Expr::Bool(true),
-                Expr::Number(1.0),
-                Expr::Number(2.0),
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("f".to_string())]),
+                Expr::List(vec![
+                    Expr::Symbol("if".to_string()),
+                    Expr::Bool(true),
+                    Expr::Number(1.0),
+                    Expr::Number(2.0),
+                ]),
             ])]
+        );
+    }
+
+    // ---- monadic body enforcement --------------------------------------------
+
+    #[test]
+    fn test_parse_func_def_multi_body_is_error() {
+        // The second expression is orphaned at the top level.
+        assert_eq!(
+            parse("f: () 1 2").unwrap_err(),
+            ParseError::UnexpectedTopLevel
+        );
+    }
+
+    #[test]
+    fn test_parse_standalone_expr_is_error() {
+        assert_eq!(
+            parse("(+ 1 2)").unwrap_err(),
+            ParseError::UnexpectedTopLevel
+        );
+    }
+
+    #[test]
+    fn test_parse_define_at_top_level_is_error() {
+        // define is no longer a valid user-facing keyword.
+        assert_eq!(
+            parse("(define x 10)").unwrap_err(),
+            ParseError::UnexpectedTopLevel
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_after_func_def_is_error() {
+        // The `42` after `main: () 0` is a standalone expression.
+        assert_eq!(
+            parse("main: () 0\n42").unwrap_err(),
+            ParseError::UnexpectedTopLevel
         );
     }
 
@@ -364,52 +344,25 @@ mod tests {
     #[test]
     fn test_parse_quote_shorthand() {
         assert_eq!(
-            parse("'x").unwrap(),
-            vec![Expr::Quote(Box::new(Expr::Symbol("x".to_string())))]
-        );
-    }
-
-    #[test]
-    fn test_parse_quote_list() {
-        assert_eq!(
-            parse("'(1 2 3)").unwrap(),
-            vec![Expr::Quote(Box::new(Expr::List(vec![
-                Expr::Number(1.0),
-                Expr::Number(2.0),
-                Expr::Number(3.0),
-            ])))]
+            parse("f: () 'x").unwrap(),
+            vec![Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("f".to_string())]),
+                Expr::Quote(Box::new(Expr::Symbol("x".to_string()))),
+            ])]
         );
     }
 
     // ---- multiple top-level expressions ---------------------------------------
 
     #[test]
-    fn test_parse_multiple_exprs() {
-        assert_eq!(
-            parse("(+ 1 2)\n(* 3 4)").unwrap(),
-            vec![
-                Expr::List(vec![
-                    Expr::Symbol("+".to_string()),
-                    Expr::Number(1.0),
-                    Expr::Number(2.0),
-                ]),
-                Expr::List(vec![
-                    Expr::Symbol("*".to_string()),
-                    Expr::Number(3.0),
-                    Expr::Number(4.0),
-                ]),
-            ]
-        );
-    }
-
-    #[test]
     fn test_parse_with_comment() {
         assert_eq!(
-            parse("; ignore this\n(+ 1 2)").unwrap(),
+            parse("; ignore this\nmain: () 0").unwrap(),
             vec![Expr::List(vec![
-                Expr::Symbol("+".to_string()),
-                Expr::Number(1.0),
-                Expr::Number(2.0),
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![Expr::Symbol("main".to_string())]),
+                Expr::Number(0.0),
             ])]
         );
     }
@@ -418,23 +371,24 @@ mod tests {
 
     #[test]
     fn test_parse_unmatched_open_paren() {
-        assert_eq!(parse("(+ 1 2").unwrap_err(), ParseError::UnmatchedOpenParen);
-    }
-
-    #[test]
-    fn test_parse_unexpected_close_paren() {
-        assert_eq!(parse(")").unwrap_err(), ParseError::UnexpectedCloseParen);
+        assert_eq!(
+            parse("f: () (+ 1 2").unwrap_err(),
+            ParseError::UnmatchedOpenParen
+        );
     }
 
     #[test]
     fn test_parse_missing_quote_target() {
-        assert_eq!(parse("'").unwrap_err(), ParseError::MissingQuoteTarget);
+        assert_eq!(
+            parse("f: () '").unwrap_err(),
+            ParseError::MissingQuoteTarget
+        );
     }
 
     #[test]
     fn test_parse_lex_error_propagated() {
         assert!(matches!(
-            parse(r#""unterminated"#).unwrap_err(),
+            parse(r#"f: () "unterminated"#).unwrap_err(),
             ParseError::Lex(_)
         ));
     }
@@ -442,5 +396,13 @@ mod tests {
     #[test]
     fn test_parse_invalid_func_def_missing_params() {
         assert_eq!(parse("foo:").unwrap_err(), ParseError::InvalidFuncDef);
+    }
+
+    #[test]
+    fn test_parse_invalid_func_def_missing_body() {
+        assert_eq!(
+            parse("foo: ()\nbar: () 1").unwrap_err(),
+            ParseError::InvalidFuncDef
+        );
     }
 }

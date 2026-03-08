@@ -4,10 +4,4 @@ sub: (a b) (- a b)
 mul: (a b) (* a b)
 div: (a b) (/ a b)
 
-main: ()
-  (begin
-    (define x (add 10 5))   ; 15
-    (define y (sub x 3))    ; 12
-    (define z (mul y 2))    ; 24
-    (define w (div z 4))    ; 6
-    0)
+main: () 0

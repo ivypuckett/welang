@@ -10,12 +10,4 @@ eq: (a b) (= a b)
 lte: (a b) (<= a b)
 gte: (a b) (>= a b)
 
-main: ()
-  (begin
-    (define a (clamp 5 0 10))   ; 5
-    (define b (clamp -3 0 10))  ; 0
-    (define c (clamp 15 0 10))  ; 10
-    (define d (eq 7 7))         ; 1
-    (define e (lte 3 3))        ; 1
-    (define f (gte 5 2))        ; 1
-    0)
+main: () (clamp 5 0 10)
