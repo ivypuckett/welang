@@ -16,9 +16,9 @@ pub enum Expr {
     Rename(String, Box<Expr>),
 }
 
-/// Errors that can occur during parsing.
+/// The kind of error that occurred during parsing.
 #[derive(Debug, PartialEq)]
-pub enum ParseError {
+pub enum ParseErrorKind {
     Lex(LexError),
     UnmatchedOpenParen,
     UnmatchedOpenBracket,
@@ -35,24 +35,26 @@ pub enum ParseError {
     EmptyPipeSegment,
 }
 
-impl std::fmt::Display for ParseError {
+impl std::fmt::Display for ParseErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::Lex(e) => write!(f, "lex error: {e}"),
-            ParseError::UnmatchedOpenParen => write!(f, "unmatched '('"),
-            ParseError::UnmatchedOpenBracket => write!(f, "unmatched '['"),
-            ParseError::UnexpectedCloseParen => write!(f, "unexpected ')'"),
-            ParseError::UnexpectedCloseBracket => write!(f, "unexpected ']'"),
-            ParseError::MissingQuoteTarget => write!(f, "quote requires an expression"),
-            ParseError::InvalidFuncDef => {
+            ParseErrorKind::Lex(e) => write!(f, "lex error: {e}"),
+            ParseErrorKind::UnmatchedOpenParen => write!(f, "unmatched '('"),
+            ParseErrorKind::UnmatchedOpenBracket => write!(f, "unmatched '['"),
+            ParseErrorKind::UnexpectedCloseParen => write!(f, "unexpected ')'"),
+            ParseErrorKind::UnexpectedCloseBracket => write!(f, "unexpected ']'"),
+            ParseErrorKind::MissingQuoteTarget => write!(f, "quote requires an expression"),
+            ParseErrorKind::InvalidFuncDef => {
                 write!(f, "invalid function definition: expected 'name: body'")
             }
-            ParseError::UnexpectedTopLevel => write!(
+            ParseErrorKind::UnexpectedTopLevel => write!(
                 f,
                 "unexpected expression at top level: only function definitions are allowed"
             ),
-            ParseError::UnexpectedPipe => write!(f, "unexpected '|' outside of a pipe expression"),
-            ParseError::EmptyPipeSegment => {
+            ParseErrorKind::UnexpectedPipe => {
+                write!(f, "unexpected '|' outside of a pipe expression")
+            }
+            ParseErrorKind::EmptyPipeSegment => {
                 write!(
                     f,
                     "empty pipe segment: '|' requires an expression on each side"
@@ -62,16 +64,42 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-impl From<LexError> for ParseError {
-    fn from(e: LexError) -> Self {
-        ParseError::Lex(e)
+/// A parse error with the 1-indexed source line where it occurred.
+#[derive(Debug, PartialEq)]
+pub struct ParseError {
+    pub kind: ParseErrorKind,
+    pub line: usize,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
     }
 }
 
-fn is_func_def_start(tokens: &[Token], pos: usize) -> bool {
-    matches!(&tokens[pos], Token::Symbol(_))
+impl From<LexError> for ParseError {
+    fn from(e: LexError) -> Self {
+        ParseError {
+            line: e.line,
+            kind: ParseErrorKind::Lex(e),
+        }
+    }
+}
+
+/// Return the line number of `tokens[pos]`, or the last token's line if past
+/// the end, or 1 if the token list is empty.
+fn line_at(tokens: &[(Token, usize)], pos: usize) -> usize {
+    if pos < tokens.len() {
+        tokens[pos].1
+    } else {
+        tokens.last().map(|(_, l)| *l).unwrap_or(1)
+    }
+}
+
+fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
+    matches!(&tokens[pos].0, Token::Symbol(_))
         && pos + 1 < tokens.len()
-        && tokens[pos + 1] == Token::Colon
+        && tokens[pos + 1].0 == Token::Colon
 }
 
 /// Parse a source string into a list of top-level function definitions.
@@ -91,13 +119,17 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
 
     while pos < tokens.len() {
         if !is_func_def_start(&tokens, pos) {
-            return Err(ParseError::UnexpectedTopLevel);
+            return Err(ParseError {
+                kind: ParseErrorKind::UnexpectedTopLevel,
+                line: tokens[pos].1,
+            });
         }
 
-        let name = match &tokens[pos] {
+        let name = match &tokens[pos].0 {
             Token::Symbol(s) => s.clone(),
             _ => unreachable!(),
         };
+        let def_line = tokens[pos].1;
         pos += 2; // consume name and colon
 
         // All functions have an implicit parameter `x`.
@@ -105,13 +137,19 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
 
         // Parse exactly one body expression.
         if pos >= tokens.len() || is_func_def_start(&tokens, pos) {
-            return Err(ParseError::InvalidFuncDef);
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidFuncDef,
+                line: def_line,
+            });
         }
         let body = parse_expr(&tokens, &mut pos)?;
 
         // After the body, must be another func def or EOF.
         if pos < tokens.len() && !is_func_def_start(&tokens, pos) {
-            return Err(ParseError::UnexpectedTopLevel);
+            return Err(ParseError {
+                kind: ParseErrorKind::UnexpectedTopLevel,
+                line: tokens[pos].1,
+            });
         }
 
         // Desugar to `(define (name params...) body)` for codegen.
@@ -125,29 +163,37 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
 }
 
 /// Parse a single expression from `tokens` starting at `*pos`.
-fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+fn parse_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseError> {
     if *pos >= tokens.len() {
-        return Err(ParseError::UnmatchedOpenParen);
+        return Err(ParseError {
+            kind: ParseErrorKind::UnmatchedOpenParen,
+            line: line_at(tokens, *pos),
+        });
     }
 
-    match &tokens[*pos] {
+    let tok_line = tokens[*pos].1;
+
+    match tokens[*pos].0.clone() {
         Token::LParen => {
             *pos += 1;
 
             // Check for rename syntax: `(name: body)`.
             if *pos < tokens.len()
-                && matches!(&tokens[*pos], Token::Symbol(_))
+                && matches!(&tokens[*pos].0, Token::Symbol(_))
                 && *pos + 1 < tokens.len()
-                && tokens[*pos + 1] == Token::Colon
+                && tokens[*pos + 1].0 == Token::Colon
             {
-                let rename = match &tokens[*pos] {
+                let rename = match &tokens[*pos].0 {
                     Token::Symbol(s) => s.clone(),
                     _ => unreachable!(),
                 };
                 *pos += 2; // consume name and colon
                 let body = parse_expr(tokens, pos)?;
-                if *pos >= tokens.len() || tokens[*pos] != Token::RParen {
-                    return Err(ParseError::UnmatchedOpenParen);
+                if *pos >= tokens.len() || tokens[*pos].0 != Token::RParen {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenParen,
+                        line: tok_line,
+                    });
                 }
                 *pos += 1; // consume `)`
                 return Ok(Expr::Rename(rename, Box::new(body)));
@@ -158,13 +204,16 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
             let mut segments: Vec<Vec<Expr>> = vec![Vec::new()];
             loop {
                 if *pos >= tokens.len() {
-                    return Err(ParseError::UnmatchedOpenParen);
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenParen,
+                        line: tok_line,
+                    });
                 }
-                if tokens[*pos] == Token::RParen {
+                if tokens[*pos].0 == Token::RParen {
                     *pos += 1;
                     break;
                 }
-                if tokens[*pos] == Token::Pipe {
+                if tokens[*pos].0 == Token::Pipe {
                     *pos += 1;
                     segments.push(Vec::new());
                     continue;
@@ -191,9 +240,15 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
                 // segment's rightmost item is called with the accumulated value.
                 let mut iter = segments.into_iter();
                 let first = iter.next().unwrap();
-                let mut acc = pipe_segment_first(first)?;
+                let mut acc = pipe_segment_first(first).map_err(|kind| ParseError {
+                    kind,
+                    line: tok_line,
+                })?;
                 for seg in iter {
-                    acc = pipe_segment_rest(seg, acc)?;
+                    acc = pipe_segment_rest(seg, acc).map_err(|kind| ParseError {
+                        kind,
+                        line: tok_line,
+                    })?;
                 }
                 Ok(acc)
             }
@@ -204,56 +259,73 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
             let mut items = Vec::new();
             loop {
                 if *pos >= tokens.len() {
-                    return Err(ParseError::UnmatchedOpenBracket);
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenBracket,
+                        line: tok_line,
+                    });
                 }
-                if tokens[*pos] == Token::RBracket {
+                if tokens[*pos].0 == Token::RBracket {
                     *pos += 1;
                     break;
                 }
                 items.push(parse_expr(tokens, pos)?);
                 // Skip optional comma separator.
-                if *pos < tokens.len() && tokens[*pos] == Token::Comma {
+                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
                     *pos += 1;
                 }
             }
             Ok(Expr::Tuple(items))
         }
 
-        Token::RParen => Err(ParseError::UnexpectedCloseParen),
-        Token::RBracket => Err(ParseError::UnexpectedCloseBracket),
-        Token::Comma => Err(ParseError::UnexpectedCloseBracket), // misplaced comma
-        Token::Colon => Err(ParseError::InvalidFuncDef),
-        Token::Pipe => Err(ParseError::UnexpectedPipe),
+        Token::RParen => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedCloseParen,
+            line: tok_line,
+        }),
+        Token::RBracket => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedCloseBracket,
+            line: tok_line,
+        }),
+        Token::Comma => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedCloseBracket, // misplaced comma
+            line: tok_line,
+        }),
+        Token::Colon => Err(ParseError {
+            kind: ParseErrorKind::InvalidFuncDef,
+            line: tok_line,
+        }),
+        Token::Pipe => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedPipe,
+            line: tok_line,
+        }),
 
         Token::Quote => {
             *pos += 1;
             if *pos >= tokens.len() {
-                return Err(ParseError::MissingQuoteTarget);
+                return Err(ParseError {
+                    kind: ParseErrorKind::MissingQuoteTarget,
+                    line: tok_line,
+                });
             }
             let inner = parse_expr(tokens, pos)?;
             Ok(Expr::Quote(Box::new(inner)))
         }
 
         Token::Number(n) => {
-            let n = *n;
             *pos += 1;
             Ok(Expr::Number(n))
         }
 
         Token::Bool(b) => {
-            let b = *b;
             *pos += 1;
             Ok(Expr::Bool(b))
         }
 
         Token::Str(s) => {
-            let s = s.clone();
             *pos += 1;
             Ok(Expr::Str(s))
         }
 
         Token::Symbol(s) => {
-            let s = s.clone();
             *pos += 1;
             Ok(Expr::Symbol(s))
         }
@@ -270,9 +342,9 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
 /// [double, x]      →  (double x)
 /// [x]              →  x
 /// ```
-fn pipe_segment_first(items: Vec<Expr>) -> Result<Expr, ParseError> {
+fn pipe_segment_first(items: Vec<Expr>) -> Result<Expr, ParseErrorKind> {
     match items.len() {
-        0 => Err(ParseError::EmptyPipeSegment),
+        0 => Err(ParseErrorKind::EmptyPipeSegment),
         1 => Ok(items.into_iter().next().unwrap()),
         _ => {
             let mut iter = items.into_iter().rev();
@@ -294,9 +366,9 @@ fn pipe_segment_first(items: Vec<Expr>) -> Result<Expr, ParseError> {
 /// [n5, n4], acc  →  (n5 (n4 acc))
 /// [n6],     acc  →  (n6 acc)
 /// ```
-fn pipe_segment_rest(items: Vec<Expr>, arg: Expr) -> Result<Expr, ParseError> {
+fn pipe_segment_rest(items: Vec<Expr>, arg: Expr) -> Result<Expr, ParseErrorKind> {
     match items.len() {
-        0 => Err(ParseError::EmptyPipeSegment),
+        0 => Err(ParseErrorKind::EmptyPipeSegment),
         1 => {
             let func = items.into_iter().next().unwrap();
             Ok(Expr::List(vec![func, arg]))
@@ -317,32 +389,37 @@ fn pipe_segment_rest(items: Vec<Expr>, arg: Expr) -> Result<Expr, ParseError> {
 mod tests {
     use super::*;
 
+    /// Unwrap the error kind from a parse result for concise assertions.
+    fn parse_err_kind(input: &str) -> ParseErrorKind {
+        parse(input).unwrap_err().kind
+    }
+
     // ---- top-level only accepts func defs ------------------------------------
 
     #[test]
     fn test_bare_number_is_error() {
-        assert_eq!(parse("42").unwrap_err(), ParseError::UnexpectedTopLevel);
+        assert_eq!(parse_err_kind("42"), ParseErrorKind::UnexpectedTopLevel);
     }
 
     #[test]
     fn test_bare_expr_is_error() {
         assert_eq!(
-            parse("(+ 1 2)").unwrap_err(),
-            ParseError::UnexpectedTopLevel
+            parse_err_kind("(+ 1 2)"),
+            ParseErrorKind::UnexpectedTopLevel
         );
     }
 
     #[test]
     fn test_multi_body_is_error() {
         // After `1` the `2` is not a func def start.
-        assert_eq!(parse("f: 1 2").unwrap_err(), ParseError::UnexpectedTopLevel);
+        assert_eq!(parse_err_kind("f: 1 2"), ParseErrorKind::UnexpectedTopLevel);
     }
 
     #[test]
     fn test_expr_after_func_def_is_error() {
         assert_eq!(
-            parse("main: 0\n42").unwrap_err(),
-            ParseError::UnexpectedTopLevel
+            parse_err_kind("main: 0\n42"),
+            ParseErrorKind::UnexpectedTopLevel
         );
     }
 
@@ -457,44 +534,44 @@ mod tests {
     #[test]
     fn test_missing_body() {
         // `foo:` at EOF — no body expression
-        assert_eq!(parse("foo:").unwrap_err(), ParseError::InvalidFuncDef);
+        assert_eq!(parse_err_kind("foo:"), ParseErrorKind::InvalidFuncDef);
     }
 
     #[test]
     fn test_missing_body_before_next_def() {
         // `foo:` followed by another func def with no body for foo
         assert_eq!(
-            parse("foo:\nbar: 1").unwrap_err(),
-            ParseError::InvalidFuncDef
+            parse_err_kind("foo:\nbar: 1"),
+            ParseErrorKind::InvalidFuncDef
         );
     }
 
     #[test]
     fn test_unmatched_open_paren() {
         assert_eq!(
-            parse("f: (+ 1 2").unwrap_err(),
-            ParseError::UnmatchedOpenParen
+            parse_err_kind("f: (+ 1 2"),
+            ParseErrorKind::UnmatchedOpenParen
         );
     }
 
     #[test]
     fn test_unmatched_open_bracket() {
         assert_eq!(
-            parse("f: [1, 2").unwrap_err(),
-            ParseError::UnmatchedOpenBracket
+            parse_err_kind("f: [1, 2"),
+            ParseErrorKind::UnmatchedOpenBracket
         );
     }
 
     #[test]
     fn test_missing_quote_target() {
-        assert_eq!(parse("f: '").unwrap_err(), ParseError::MissingQuoteTarget);
+        assert_eq!(parse_err_kind("f: '"), ParseErrorKind::MissingQuoteTarget);
     }
 
     #[test]
     fn test_lex_error_propagated() {
         assert!(matches!(
-            parse(r#"f: "unterminated"#).unwrap_err(),
-            ParseError::Lex(_)
+            parse_err_kind(r#"f: "unterminated"#),
+            ParseErrorKind::Lex(_)
         ));
     }
 
@@ -511,6 +588,35 @@ mod tests {
                 Expr::Number(0.0),
             ])]
         );
+    }
+
+    // ---- line number reporting -----------------------------------------------
+
+    #[test]
+    fn test_error_line_number_first_line() {
+        let err = parse("42").unwrap_err();
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn test_error_line_number_second_line() {
+        let err = parse("main: 0\n42").unwrap_err();
+        assert_eq!(err.line, 2);
+    }
+
+    #[test]
+    fn test_error_line_unmatched_paren() {
+        // The `(` is on line 2.
+        let err = parse("main: 0\nf: (+ 1 2").unwrap_err();
+        assert_eq!(err.line, 2);
+        assert_eq!(err.kind, ParseErrorKind::UnmatchedOpenParen);
+    }
+
+    #[test]
+    fn test_lex_error_line_propagated() {
+        // The unterminated string starts on line 3.
+        let err = parse("a: 1\nb: 2\nc: \"oops").unwrap_err();
+        assert_eq!(err.line, 3);
     }
 
     // ---- pipe operator -------------------------------------------------------
@@ -603,24 +709,24 @@ mod tests {
     #[test]
     fn test_pipe_empty_segment_error() {
         assert_eq!(
-            parse("f: (x | | double)").unwrap_err(),
-            ParseError::EmptyPipeSegment
+            parse_err_kind("f: (x | | double)"),
+            ParseErrorKind::EmptyPipeSegment
         );
     }
 
     #[test]
     fn test_pipe_leading_pipe_error() {
         assert_eq!(
-            parse("f: (| double)").unwrap_err(),
-            ParseError::EmptyPipeSegment
+            parse_err_kind("f: (| double)"),
+            ParseErrorKind::EmptyPipeSegment
         );
     }
 
     #[test]
     fn test_pipe_trailing_pipe_error() {
         assert_eq!(
-            parse("f: (double |)").unwrap_err(),
-            ParseError::EmptyPipeSegment
+            parse_err_kind("f: (double |)"),
+            ParseErrorKind::EmptyPipeSegment
         );
     }
 }
