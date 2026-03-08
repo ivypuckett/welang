@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -6,7 +7,7 @@ use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
 
@@ -18,6 +19,18 @@ struct FuncInfo {
     id: FuncId,
     arity: usize,
     is_main: bool,
+}
+
+/// Pre-declared external functions and data used by built-in operations.
+struct Builtins {
+    /// `printf(const char*, i64) -> i32` — used by `(print n)` for integers.
+    printf_id: FuncId,
+    /// `puts(const char*) -> i32` — used by `(print "s")` for string literals.
+    puts_id: FuncId,
+    /// `"%ld\n"` format string for integer printing.
+    fmt_int_id: DataId,
+    /// Counter for generating unique names for string-literal data objects.
+    next_str_id: Cell<usize>,
 }
 
 fn create_module() -> Result<ObjectModule, CompileError> {
@@ -76,10 +89,53 @@ fn make_sig(
 ///   `(if [cond, then])`         — conditional (else = 0)
 ///   `(if [cond, then, else])`   — conditional with else branch
 ///   `(name: body)`              — rename `x` to `name` in `body`
+///   `(print x)`                 — print integer x as "%ld\n", returns x
+///   `(print "s")`               — print string literal s followed by newline, returns 0
 ///   `(f arg)`                   — call one-arg function
 ///   `(f)`                       — call zero-arg function
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     let mut module = create_module()?;
+
+    // Declare printf(const char*, i64) -> i32 for integer printing.
+    // We treat it as non-variadic here because we always pass exactly one i64;
+    // this matches the x86_64 System V ABI for this specific call pattern.
+    let printf_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // format string pointer
+        sig.params.push(AbiParam::new(types::I64)); // integer value
+        sig.returns.push(AbiParam::new(types::I32));
+        module
+            .declare_function("printf", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Declare puts(const char*) -> i32 for string literal printing.
+    let puts_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // string pointer
+        sig.returns.push(AbiParam::new(types::I32));
+        module
+            .declare_function("puts", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Define the "%ld\n" format string used by (print n).
+    let fmt_int_id = {
+        let mut desc = DataDescription::new();
+        desc.define(b"%ld\n\0".to_vec().into_boxed_slice());
+        let id = module
+            .declare_data("__we_fmt_int", Linkage::Local, false, false)
+            .map_err(|e| e.to_string())?;
+        module.define_data(id, &desc).map_err(|e| e.to_string())?;
+        id
+    };
+
+    let builtins = Builtins {
+        printf_id,
+        puts_id,
+        fmt_int_id,
+        next_str_id: Cell::new(0),
+    };
 
     let mut registry: HashMap<String, FuncInfo> = HashMap::new();
 
@@ -112,7 +168,7 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             && kw == "define"
             && let Expr::List(sig_items) = &items[1]
         {
-            compile_function(&mut module, &registry, sig_items, &items[2..])?;
+            compile_function(&mut module, &registry, sig_items, &items[2..], &builtins)?;
         }
     }
 
@@ -125,6 +181,7 @@ fn compile_function(
     registry: &HashMap<String, FuncInfo>,
     sig_items: &[Expr],
     body: &[Expr],
+    builtins: &Builtins,
 ) -> Result<(), CompileError> {
     let name = match sig_items.first() {
         Some(Expr::Symbol(s)) => s.as_str(),
@@ -181,6 +238,7 @@ fn compile_function(
                 expr,
                 &mut locals,
                 &mut next_var,
+                builtins,
             )?;
         }
 
@@ -201,6 +259,7 @@ fn compile_function(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_expr(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -208,6 +267,7 @@ fn compile_expr(
     expr: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    builtins: &Builtins,
 ) -> Result<Value, CompileError> {
     match expr {
         Expr::Number(n) => Ok(builder.ins().iconst(types::I64, *n as i64)),
@@ -239,7 +299,7 @@ fn compile_expr(
             builder.declare_var(new_var, types::I64);
             builder.def_var(new_var, x_val);
             locals.insert(name.clone(), new_var);
-            compile_expr(builder, module, registry, body, locals, next_var)
+            compile_expr(builder, module, registry, body, locals, next_var, builtins)
         }
 
         // Tuple at expression level is only valid as an argument to an operator.
@@ -252,22 +312,41 @@ fn compile_expr(
         }
 
         // Single-element list `(expr)` is grouping — evaluates the inner expression.
-        Expr::List(items) if items.len() == 1 => {
-            compile_expr(builder, module, registry, &items[0], locals, next_var)
-        }
+        Expr::List(items) if items.len() == 1 => compile_expr(
+            builder, module, registry, &items[0], locals, next_var, builtins,
+        ),
 
         Expr::List(items) => match &items[0] {
             Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
-                compile_arith(builder, module, registry, op, lhs, rhs, locals, next_var)
+                compile_arith(
+                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
+                )
             }
             Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
-                compile_cmp(builder, module, registry, op, lhs, rhs, locals, next_var)
+                compile_cmp(
+                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
+                )
             }
-            Expr::Symbol(kw) if kw == "if" => {
-                compile_if(builder, module, registry, &items[1..], locals, next_var)
-            }
+            Expr::Symbol(kw) if kw == "if" => compile_if(
+                builder,
+                module,
+                registry,
+                &items[1..],
+                locals,
+                next_var,
+                builtins,
+            ),
+            Expr::Symbol(kw) if kw == "print" => compile_print(
+                builder,
+                module,
+                registry,
+                &items[1..],
+                locals,
+                next_var,
+                builtins,
+            ),
             Expr::Symbol(name) => compile_call(
                 builder,
                 module,
@@ -276,12 +355,15 @@ fn compile_expr(
                 &items[1..],
                 locals,
                 next_var,
+                builtins,
             ),
             other => Err(format!("cannot call {:?} as a function", other)),
         },
 
         Expr::Quote(_) => Err("quoted expressions are not supported in compiled code".to_string()),
-        Expr::Str(_) => Err("string literals are not yet supported in compiled code".to_string()),
+        Expr::Str(_) => {
+            Err("string literals are only supported as arguments to 'print'".to_string())
+        }
     }
 }
 
@@ -310,9 +392,10 @@ fn compile_arith(
     rhs: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    builtins: &Builtins,
 ) -> Result<Value, CompileError> {
-    let lv = compile_expr(builder, module, registry, lhs, locals, next_var)?;
-    let rv = compile_expr(builder, module, registry, rhs, locals, next_var)?;
+    let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
+    let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     Ok(match op {
         "+" => builder.ins().iadd(lv, rv),
         "-" => builder.ins().isub(lv, rv),
@@ -332,9 +415,10 @@ fn compile_cmp(
     rhs: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    builtins: &Builtins,
 ) -> Result<Value, CompileError> {
-    let lv = compile_expr(builder, module, registry, lhs, locals, next_var)?;
-    let rv = compile_expr(builder, module, registry, rhs, locals, next_var)?;
+    let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
+    let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     let cc = match op {
         "=" => IntCC::Equal,
         "<" => IntCC::SignedLessThan,
@@ -347,6 +431,7 @@ fn compile_cmp(
     Ok(builder.ins().uextend(types::I64, b))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_if(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -354,6 +439,7 @@ fn compile_if(
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    builtins: &Builtins,
 ) -> Result<Value, CompileError> {
     // Expect a 2-element `[cond, then]` or 3-element `[cond, then, else]` tuple.
     let tuple_elems = match args {
@@ -365,7 +451,15 @@ fn compile_if(
         }
     };
 
-    let cond = compile_expr(builder, module, registry, &tuple_elems[0], locals, next_var)?;
+    let cond = compile_expr(
+        builder,
+        module,
+        registry,
+        &tuple_elems[0],
+        locals,
+        next_var,
+        builtins,
+    )?;
     let zero = builder.ins().iconst(types::I64, 0);
     let flag = builder.ins().icmp(IntCC::NotEqual, cond, zero);
 
@@ -378,13 +472,29 @@ fn compile_if(
 
     builder.switch_to_block(then_block);
     builder.seal_block(then_block);
-    let then_val = compile_expr(builder, module, registry, &tuple_elems[1], locals, next_var)?;
+    let then_val = compile_expr(
+        builder,
+        module,
+        registry,
+        &tuple_elems[1],
+        locals,
+        next_var,
+        builtins,
+    )?;
     builder.ins().jump(merge_block, &[then_val]);
 
     builder.switch_to_block(else_block);
     builder.seal_block(else_block);
     let else_val = if tuple_elems.len() == 3 {
-        compile_expr(builder, module, registry, &tuple_elems[2], locals, next_var)?
+        compile_expr(
+            builder,
+            module,
+            registry,
+            &tuple_elems[2],
+            locals,
+            next_var,
+            builtins,
+        )?
     } else {
         builder.ins().iconst(types::I64, 0)
     };
@@ -395,6 +505,67 @@ fn compile_if(
     Ok(builder.block_params(merge_block)[0])
 }
 
+/// Compile `(print arg)`.
+///
+/// - `(print n)` where `n` is an integer expression: prints `"%ld\n"` via
+///   `printf`, returns `n`.
+/// - `(print "s")` where `"s"` is a string literal: prints the string
+///   followed by a newline via `puts`, returns `0`.
+#[allow(clippy::too_many_arguments)]
+fn compile_print(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    registry: &HashMap<String, FuncInfo>,
+    args: &[Expr],
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+    builtins: &Builtins,
+) -> Result<Value, CompileError> {
+    if args.len() != 1 {
+        return Err(format!("'print' expects 1 argument, got {}", args.len()));
+    }
+
+    // Special-case string literals: store in data section and call puts.
+    if let Expr::Str(s) = &args[0] {
+        let label = format!("__we_str_{}", builtins.next_str_id.get());
+        builtins.next_str_id.set(builtins.next_str_id.get() + 1);
+
+        let mut desc = DataDescription::new();
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.push(b'\0');
+        desc.define(bytes.into_boxed_slice());
+
+        let str_id = module
+            .declare_data(&label, Linkage::Local, false, false)
+            .map_err(|e| e.to_string())?;
+        module
+            .define_data(str_id, &desc)
+            .map_err(|e| e.to_string())?;
+
+        let gv = module.declare_data_in_func(str_id, builder.func);
+        let str_ptr = builder.ins().global_value(types::I64, gv);
+
+        let puts_ref = module.declare_func_in_func(builtins.puts_id, builder.func);
+        builder.ins().call(puts_ref, &[str_ptr]);
+
+        return Ok(builder.ins().iconst(types::I64, 0));
+    }
+
+    // General case: compile the expression and print it as an integer.
+    let val = compile_expr(
+        builder, module, registry, &args[0], locals, next_var, builtins,
+    )?;
+
+    let gv = module.declare_data_in_func(builtins.fmt_int_id, builder.func);
+    let fmt_ptr = builder.ins().global_value(types::I64, gv);
+
+    let printf_ref = module.declare_func_in_func(builtins.printf_id, builder.func);
+    builder.ins().call(printf_ref, &[fmt_ptr, val]);
+
+    Ok(val)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_call(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
@@ -403,6 +574,7 @@ fn compile_call(
     args: &[Expr],
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    builtins: &Builtins,
 ) -> Result<Value, CompileError> {
     let info = registry
         .get(name)
@@ -419,7 +591,7 @@ fn compile_call(
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .map(|a| compile_expr(builder, module, registry, a, locals, next_var))
+        .map(|a| compile_expr(builder, module, registry, a, locals, next_var, builtins))
         .collect::<Result<Vec<_>, _>>()?;
 
     let func_ref = module.declare_func_in_func(info.id, builder.func);
