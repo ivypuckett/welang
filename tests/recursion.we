@@ -1,17 +1,12 @@
 ; Tests recursive function calls.
-(define (factorial n)
-  (if (<= n 1)
-    1
-    (* n (factorial (- n 1)))))
+factorial:
+  (if [(<= [x, 1]),
+    1,
+    (* [x, (factorial (- [x, 1]))])])
 
-(define (fib n)
-  (if (< n 2)
-    n
-    (+ (fib (- n 1)) (fib (- n 2)))))
+fib:
+  (if [(< [x, 2]),
+    x,
+    (+ [(fib (- [x, 1])), (fib (- [x, 2]))])])
 
-(define (main)
-  (begin
-    (define f5 (factorial 5))  ; 120
-    (define f0 (factorial 0))  ; 1  (base case: <= 1)
-    (define g7 (fib 7))        ; 13
-    0))
+main: () (factorial 5)

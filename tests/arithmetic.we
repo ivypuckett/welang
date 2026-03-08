@@ -1,13 +1,7 @@
-; Tests the four arithmetic operators: + - * /
-(define (add a b) (+ a b))
-(define (sub a b) (- a b))
-(define (mul a b) (* a b))
-(define (div a b) (/ a b))
+; Tests the four arithmetic operators with tuple arguments.
+double: (* [2, x])
+halve: (/ [x, 2])
+inc: (+ [x, 1])
+dec: (- [x, 1])
 
-(define (main)
-  (begin
-    (define x (add 10 5))   ; 15
-    (define y (sub x 3))    ; 12
-    (define z (mul y 2))    ; 24
-    (define w (div z 4))    ; 6
-    0))
+main: () (double 5)

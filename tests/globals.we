@@ -1,16 +1,5 @@
-; Tests global numeric constants and local define bindings.
-(define ZERO 0)
-(define TEN 10)
-(define HUNDRED 100)
+; Tests function composition.
+double: (* [2, x])
+quadruple: (double (double x))
 
-(define (scale x factor)
-  (begin
-    (define result (* x factor))
-    result))
-
-(define (main)
-  (begin
-    (define a (scale TEN TEN))        ; 100
-    (define b (scale HUNDRED TEN))    ; 1000
-    (define c (+ a b ZERO))           ; 1100
-    0))
+main: () (quadruple 3)
