@@ -1,0 +1,7 @@
+; Test the print built-in.
+; (print n) prints the integer and returns it; (print "s") prints the string and returns 0.
+
+main:
+  (if [(= [(print 42), 42]),
+    0,
+    1])
