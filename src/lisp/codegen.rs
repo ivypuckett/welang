@@ -50,7 +50,6 @@ fn make_sig(
 ) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
     if is_main {
-        // C `int main(void)` — returns i32
         sig.returns.push(AbiParam::new(types::I32));
     } else {
         for _ in 0..arity {
@@ -63,21 +62,23 @@ fn make_sig(
 
 /// Compile a slice of top-level AST nodes into an ELF object file (raw bytes).
 ///
-/// Supported top-level forms:
-/// - `name: (args...) body` — function definition (monadic body)
+/// Top-level forms (produced by the parser):
+///   `(define (name) body)`      — zero-arg function
+///   `(define (name x) body)`    — one-arg function; input is `x`
 ///
 /// Inside function bodies:
-/// - number / bool literals
-/// - symbol references (parameters)
-/// - `(+ - * / a b ...)` — arithmetic
-/// - `(= < > <= >= a b)` — comparisons (return 0 or 1)
-/// - `(if cond then [else])` — conditional
-/// - `(begin e1 e2 ...)`   — sequence, returns last value
-/// - `(f arg ...)`         — function call
+///   number / bool literals
+///   `x`                         — the implicit input parameter
+///   `(op [a, b])`               — arithmetic: `+  -  *  /`
+///   `(op [a, b])`               — comparison: `=  <  >  <=  >=`  (returns 0 or 1)
+///   `(if [cond, then])`         — conditional (else = 0)
+///   `(if [cond, then, else])`   — conditional with else branch
+///   `(name: body)`              — rename `x` to `name` in `body`
+///   `(f arg)`                   — call one-arg function
+///   `(f)`                       — call zero-arg function
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     let mut module = create_module()?;
 
-    // Declare all top-level functions.
     let mut registry: HashMap<String, FuncInfo> = HashMap::new();
 
     for expr in exprs {
@@ -99,10 +100,9 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     }
 
     if registry.is_empty() {
-        return Err("no function definitions found — define at least one function".to_string());
+        return Err("no function definitions found".to_string());
     }
 
-    // Compile each function body.
     for expr in exprs {
         if let Expr::List(items) = expr
             && items.len() >= 3
@@ -126,7 +126,7 @@ fn compile_function(
 ) -> Result<(), CompileError> {
     let name = match sig_items.first() {
         Some(Expr::Symbol(s)) => s.as_str(),
-        _ => return Err("expected function name as first element of signature".to_string()),
+        _ => return Err("expected function name".to_string()),
     };
 
     let param_names: Vec<&str> = sig_items[1..]
@@ -166,7 +166,6 @@ fn compile_function(
             locals.insert(pname.to_string(), var);
         }
 
-        // Evaluate each body expression; the last one is the return value.
         let mut result = builder.ins().iconst(types::I64, 0);
         for expr in body {
             result = compile_expr(
@@ -217,24 +216,51 @@ fn compile_expr(
             }
         }
 
-        Expr::List(items) if items.is_empty() => Err("cannot evaluate an empty list".to_string()),
+        // `(name: body)` — rename `x` to `name` in scope of `body`.
+        Expr::Rename(name, body) => {
+            let x_val = locals
+                .get("x")
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "rename '({}: ...)' can only be used in a one-arg function",
+                        name
+                    )
+                })
+                .map(|var| builder.use_var(var))?;
+            let new_var = Variable::from_u32(*next_var as u32);
+            *next_var += 1;
+            builder.declare_var(new_var, types::I64);
+            builder.def_var(new_var, x_val);
+            locals.insert(name.clone(), new_var);
+            compile_expr(builder, module, registry, body, locals, next_var)
+        }
+
+        // Tuple at expression level is only valid as an argument to an operator.
+        Expr::Tuple(_) => Err(
+            "tuple literal [...] can only appear as an argument to a built-in operator".to_string(),
+        ),
+
+        Expr::List(items) if items.is_empty() => {
+            Err("empty list () is not a valid expression".to_string())
+        }
+
+        // Single-element list `(expr)` is grouping — evaluates the inner expression.
+        Expr::List(items) if items.len() == 1 => {
+            compile_expr(builder, module, registry, &items[0], locals, next_var)
+        }
 
         Expr::List(items) => match &items[0] {
             Expr::Symbol(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
-                compile_arith(builder, module, registry, op, &items[1..], locals, next_var)
+                let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
+                compile_arith(builder, module, registry, op, lhs, rhs, locals, next_var)
             }
             Expr::Symbol(op) if matches!(op.as_str(), "=" | "<" | ">" | "<=" | ">=") => {
-                compile_cmp(builder, module, registry, op, &items[1..], locals, next_var)
+                let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
+                compile_cmp(builder, module, registry, op, lhs, rhs, locals, next_var)
             }
             Expr::Symbol(kw) if kw == "if" => {
                 compile_if(builder, module, registry, &items[1..], locals, next_var)
-            }
-            Expr::Symbol(kw) if kw == "begin" => {
-                let mut val = builder.ins().iconst(types::I64, 0);
-                for e in &items[1..] {
-                    val = compile_expr(builder, module, registry, e, locals, next_var)?;
-                }
-                Ok(val)
             }
             Expr::Symbol(name) => compile_call(
                 builder,
@@ -253,46 +279,56 @@ fn compile_expr(
     }
 }
 
+/// Expect exactly one argument which is a 2-element tuple `[a, b]`.
+/// Returns references to the two elements.
+fn unpack_binary_tuple<'a>(
+    op: &str,
+    args: &'a [Expr],
+) -> Result<(&'a Expr, &'a Expr), CompileError> {
+    match args {
+        [Expr::Tuple(elems)] if elems.len() == 2 => Ok((&elems[0], &elems[1])),
+        _ => Err(format!(
+            "'{}' requires a 2-element tuple argument [a, b]",
+            op
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_arith(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
     op: &str,
-    args: &[Expr],
+    lhs: &Expr,
+    rhs: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
 ) -> Result<Value, CompileError> {
-    if args.len() < 2 {
-        return Err(format!("'{}' requires at least 2 arguments", op));
-    }
-    let mut acc = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
-    for arg in &args[1..] {
-        let rhs = compile_expr(builder, module, registry, arg, locals, next_var)?;
-        acc = match op {
-            "+" => builder.ins().iadd(acc, rhs),
-            "-" => builder.ins().isub(acc, rhs),
-            "*" => builder.ins().imul(acc, rhs),
-            "/" => builder.ins().sdiv(acc, rhs),
-            _ => unreachable!(),
-        };
-    }
-    Ok(acc)
+    let lv = compile_expr(builder, module, registry, lhs, locals, next_var)?;
+    let rv = compile_expr(builder, module, registry, rhs, locals, next_var)?;
+    Ok(match op {
+        "+" => builder.ins().iadd(lv, rv),
+        "-" => builder.ins().isub(lv, rv),
+        "*" => builder.ins().imul(lv, rv),
+        "/" => builder.ins().sdiv(lv, rv),
+        _ => unreachable!(),
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_cmp(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
     op: &str,
-    args: &[Expr],
+    lhs: &Expr,
+    rhs: &Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
 ) -> Result<Value, CompileError> {
-    if args.len() != 2 {
-        return Err(format!("'{}' requires exactly 2 arguments", op));
-    }
-    let lhs = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
-    let rhs = compile_expr(builder, module, registry, &args[1], locals, next_var)?;
+    let lv = compile_expr(builder, module, registry, lhs, locals, next_var)?;
+    let rv = compile_expr(builder, module, registry, rhs, locals, next_var)?;
     let cc = match op {
         "=" => IntCC::Equal,
         "<" => IntCC::SignedLessThan,
@@ -301,8 +337,7 @@ fn compile_cmp(
         ">=" => IntCC::SignedGreaterThanOrEqual,
         _ => unreachable!(),
     };
-    let b = builder.ins().icmp(cc, lhs, rhs);
-    // icmp returns i8; extend to i64 so callers always see a uniform type.
+    let b = builder.ins().icmp(cc, lv, rv);
     Ok(builder.ins().uextend(types::I64, b))
 }
 
@@ -314,11 +349,17 @@ fn compile_if(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
 ) -> Result<Value, CompileError> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err("'if' requires 2 or 3 arguments (condition, then [, else])".to_string());
-    }
+    // Expect a 2-element `[cond, then]` or 3-element `[cond, then, else]` tuple.
+    let tuple_elems = match args {
+        [Expr::Tuple(elems)] if elems.len() == 2 || elems.len() == 3 => elems,
+        _ => {
+            return Err(
+                "'if' requires a tuple argument: [cond, then] or [cond, then, else]".to_string(),
+            );
+        }
+    };
 
-    let cond = compile_expr(builder, module, registry, &args[0], locals, next_var)?;
+    let cond = compile_expr(builder, module, registry, &tuple_elems[0], locals, next_var)?;
     let zero = builder.ins().iconst(types::I64, 0);
     let flag = builder.ins().icmp(IntCC::NotEqual, cond, zero);
 
@@ -329,23 +370,20 @@ fn compile_if(
 
     builder.ins().brif(flag, then_block, &[], else_block, &[]);
 
-    // then branch
     builder.switch_to_block(then_block);
     builder.seal_block(then_block);
-    let then_val = compile_expr(builder, module, registry, &args[1], locals, next_var)?;
+    let then_val = compile_expr(builder, module, registry, &tuple_elems[1], locals, next_var)?;
     builder.ins().jump(merge_block, &[then_val]);
 
-    // else branch
     builder.switch_to_block(else_block);
     builder.seal_block(else_block);
-    let else_val = if args.len() == 3 {
-        compile_expr(builder, module, registry, &args[2], locals, next_var)?
+    let else_val = if tuple_elems.len() == 3 {
+        compile_expr(builder, module, registry, &tuple_elems[2], locals, next_var)?
     } else {
         builder.ins().iconst(types::I64, 0)
     };
     builder.ins().jump(merge_block, &[else_val]);
 
-    // merge
     builder.switch_to_block(merge_block);
     builder.seal_block(merge_block);
     Ok(builder.block_params(merge_block)[0])
@@ -380,15 +418,11 @@ fn compile_call(
 
     let func_ref = module.declare_func_in_func(info.id, builder.func);
     let call = builder.ins().call(func_ref, &arg_vals);
-    // Copy the result Value out before taking another mutable borrow of builder.
     let first_result = builder.inst_results(call).first().copied();
 
     match first_result {
         None => Ok(builder.ins().iconst(types::I64, 0)),
-        Some(r) if info.is_main => {
-            // main returns i32 — sign-extend to i64 for uniform internal type
-            Ok(builder.ins().sextend(types::I64, r))
-        }
+        Some(r) if info.is_main => Ok(builder.ins().sextend(types::I64, r)),
         Some(r) => Ok(r),
     }
 }

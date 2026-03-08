@@ -1,17 +1,9 @@
-; Tests if/else, including the optional else-less form.
-abs: (x)
-  (if (< x 0)
-    (- 0 x)
-    x)
+; Tests if/else and the rename binding.
+abs: (if [(< [x, 0]), (- [0, x]), x])
 
-max: (a b)
-  (if (> a b) a b)
+positive-only: (if [(> [x, 0]), x])
 
-min: (a b)
-  (if (< a b) a b)
+; rename x to n for readability
+abs-named: (n: (if [(< [n, 0]), (- [0, n]), n]))
 
-; if without else returns 0 when condition is false
-positive-only: (x)
-  (if (> x 0) x)
-
-main: () (max (abs -7) (min 4 9))
+main: () (abs -7)

@@ -6,25 +6,33 @@ welang is a programming language implemented in Rust. The CLI binary is named `w
 
 ## Syntax
 
-All top-level definitions use `name: (params) body`:
+All top-level definitions use `name: () body` (zero-arg) or `name: body` (one-arg):
 
 ```
-; no-argument function
+; zero-argument function
 main: () 0
 
-; function with parameters
-add: (a b) (+ a b)
+; one-argument function — input is always the implicit variable x
+double: (* [2, x])
 
-; single-expression body (bodies are monadic — exactly one expression)
-factorial: (n)
-  (if (<= n 1)
-    1
-    (* n (factorial (- n 1))))
+; multi-argument operations use tuple syntax [a, b]
+factorial:
+  (if [(<= [x, 1]),
+    1,
+    (* [x, (factorial (- [x, 1]))])])
 ```
 
 There is no `define` keyword. Every definition is a function definition.
-Bodies are **monadic**: exactly one expression follows the parameter list.
+Bodies are **monadic**: exactly one expression per definition.
 Anything else at the top level is a compile-time error.
+
+### Key rules
+
+- Functions are **strictly monadic**: zero arguments (`()`) or one argument (implicit `x`).
+- Multi-argument operations use a **tuple**: `[a, b]`.
+- Built-in operators (`+ - * / = < > <= >=`) each take a 2-element tuple.
+- `if` takes a 2- or 3-element tuple: `(if [cond, then])` or `(if [cond, then, else])`.
+- `(name: body)` renames the implicit `x` to `name` within `body` (useful for closures).
 
 ## Development
 

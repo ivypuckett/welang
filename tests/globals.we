@@ -1,4 +1,5 @@
-; Tests functions used as constants and local computation.
-scale: (x factor) (* x factor)
+; Tests function composition.
+double: (* [2, x])
+quadruple: (double (double x))
 
-main: () (scale 10 10)
+main: () (quadruple 3)

@@ -1,13 +1,7 @@
-; Tests all six comparison operators: = < > <= >= and booleans.
-clamp: (x lo hi)
-  (if (< x lo)
-    lo
-    (if (> x hi)
-      hi
-      x))
+; Tests comparison operators with tuple arguments.
+clamp10: (if [(< [x, 0]), 0, (if [(> [x, 10]), 10, x])])
+is-pos: (> [x, 0])
+is-neg: (< [x, 0])
+is-zero: (= [x, 0])
 
-eq: (a b) (= a b)
-lte: (a b) (<= a b)
-gte: (a b) (>= a b)
-
-main: () (clamp 5 0 10)
+main: () (clamp10 5)
