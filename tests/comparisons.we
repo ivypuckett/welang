@@ -4,4 +4,4 @@ is-pos: (> [x, 0])
 is-neg: (< [x, 0])
 is-zero: (= [x, 0])
 
-main: () (clamp10 5)
+main: (clamp10 5)

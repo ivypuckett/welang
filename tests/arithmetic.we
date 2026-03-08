@@ -4,4 +4,4 @@ halve: (/ [x, 2])
 inc: (+ [x, 1])
 dec: (- [x, 1])
 
-main: () (double 5)
+main: (double 5)
