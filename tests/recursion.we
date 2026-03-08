@@ -9,4 +9,4 @@ fib:
     x,
     (+ [(fib (- [x, 1])), (fib (- [x, 2]))])])
 
-main: (factorial 5)
+main: (if [(= [(factorial 5), 120]), 0, 1])

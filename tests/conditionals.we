@@ -6,4 +6,4 @@ positive-only: (if [(> [x, 0]), x])
 ; rename x to n for readability
 abs-named: (n: (if [(< [n, 0]), (- [0, n]), n]))
 
-main: (abs -7)
+main: (if [(= [(abs -7), 7]), 0, 1])
