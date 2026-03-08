@@ -1,0 +1,35 @@
+; Pipe ordering test: (n3 n2 n1 x | n5 n4 | n6 | n10 n9 n8 n7)
+;
+; Each step ni applies: result = 2 * input + i
+; Starting from x = 0, applying n1 through n10 in order gives:
+;
+;   n1(0)    = 1
+;   n2(1)    = 4
+;   n3(4)    = 11
+;   n4(11)   = 26
+;   n5(26)   = 57
+;   n6(57)   = 120
+;   n7(120)  = 247
+;   n8(247)  = 502
+;   n9(502)  = 1013
+;   n10(1013)= 2036
+;
+; Any other execution order produces a different value, so main
+; returns 0 (success) only when the pipeline ran steps 1-10 in order.
+
+n1: (+ [(* [2, x]), 1])
+n2: (+ [(* [2, x]), 2])
+n3: (+ [(* [2, x]), 3])
+n4: (+ [(* [2, x]), 4])
+n5: (+ [(* [2, x]), 5])
+n6: (+ [(* [2, x]), 6])
+n7: (+ [(* [2, x]), 7])
+n8: (+ [(* [2, x]), 8])
+n9: (+ [(* [2, x]), 9])
+n10: (+ [(* [2, x]), 10])
+
+; Desugars to: (n10 (n9 (n8 (n7 (n6 (n5 (n4 (n3 (n2 (n1 x))))))))))
+; Mirrors the pattern (3 2 1 x | 5 4 | 6 | 10 9 8 7) from the spec.
+pipeline: (n3 n2 n1 x | n5 n4 | n6 | n10 n9 n8 n7)
+
+main: (if [(= [(pipeline 0), 2036]), 0, 1])

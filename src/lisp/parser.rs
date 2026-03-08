@@ -178,12 +178,22 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
                 Ok(Expr::List(segments.into_iter().next().unwrap()))
             } else {
                 // Desugar pipeline left-to-right: (a | b | c) → (c (b a)).
+                //
+                // Each segment is folded right so its leftmost item is the
+                // outermost (last-to-run) function and its rightmost item is
+                // innermost (first-to-run):
+                //
+                //   (n3 n2 n1 x | n5 n4 | n6)
+                //   → (n6 (n5 (n4 (n3 (n2 (n1 x))))))
+                //
+                // The first segment's rightmost item is used as-is (it should
+                // be a value, e.g. `x` or a literal).  Every subsequent
+                // segment's rightmost item is called with the accumulated value.
                 let mut iter = segments.into_iter();
                 let first = iter.next().unwrap();
-                let mut acc = segment_to_expr(first)?;
+                let mut acc = pipe_segment_first(first)?;
                 for seg in iter {
-                    let func = segment_to_expr(seg)?;
-                    acc = Expr::List(vec![func, acc]);
+                    acc = pipe_segment_rest(seg, acc)?;
                 }
                 Ok(acc)
             }
@@ -250,15 +260,56 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     }
 }
 
-/// Convert a pipe segment (a list of already-parsed sub-expressions) into a
-/// single `Expr`.  A segment with one item is that item; a segment with
-/// multiple items is wrapped in a `List` (i.e. a regular function call).
-/// An empty segment is a parse error.
-fn segment_to_expr(items: Vec<Expr>) -> Result<Expr, ParseError> {
+/// Build the first pipe segment by folding right.
+///
+/// The rightmost item is treated as a plain value (e.g. `x` or a literal).
+/// Every item to its left is wrapped around it as a one-argument call:
+///
+/// ```text
+/// [n3, n2, n1, x]  →  (n3 (n2 (n1 x)))
+/// [double, x]      →  (double x)
+/// [x]              →  x
+/// ```
+fn pipe_segment_first(items: Vec<Expr>) -> Result<Expr, ParseError> {
     match items.len() {
         0 => Err(ParseError::EmptyPipeSegment),
         1 => Ok(items.into_iter().next().unwrap()),
-        _ => Ok(Expr::List(items)),
+        _ => {
+            let mut iter = items.into_iter().rev();
+            let mut acc = iter.next().unwrap(); // rightmost = innermost value
+            for func in iter {
+                acc = Expr::List(vec![func, acc]);
+            }
+            Ok(acc)
+        }
+    }
+}
+
+/// Build a subsequent pipe segment, threading `arg` through it.
+///
+/// The rightmost item is called with `arg` as its input.  Every item to its
+/// left wraps around the accumulated result:
+///
+/// ```text
+/// [n5, n4], acc  →  (n5 (n4 acc))
+/// [n6],     acc  →  (n6 acc)
+/// ```
+fn pipe_segment_rest(items: Vec<Expr>, arg: Expr) -> Result<Expr, ParseError> {
+    match items.len() {
+        0 => Err(ParseError::EmptyPipeSegment),
+        1 => {
+            let func = items.into_iter().next().unwrap();
+            Ok(Expr::List(vec![func, arg]))
+        }
+        _ => {
+            let mut iter = items.into_iter().rev();
+            let last = iter.next().unwrap();
+            let mut acc = Expr::List(vec![last, arg]); // rightmost receives arg
+            for func in iter {
+                acc = Expr::List(vec![func, acc]);
+            }
+            Ok(acc)
+        }
     }
 }
 
@@ -523,6 +574,28 @@ mod tests {
                         Expr::Symbol("x".to_string()),
                     ]),
                 ]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_pipe_multi_element_segments() {
+        // (n3 n2 n1 x | n5 n4) desugars to (n5 (n4 (n3 (n2 (n1 x)))))
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let call = |f: Expr, a: Expr| Expr::List(vec![f, a]);
+        let expected_body = call(
+            sym("n5"),
+            call(
+                sym("n4"),
+                call(sym("n3"), call(sym("n2"), call(sym("n1"), sym("x")))),
+            ),
+        );
+        assert_eq!(
+            parse("f: (n3 n2 n1 x | n5 n4)").unwrap(),
+            vec![Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                expected_body,
             ])]
         );
     }
