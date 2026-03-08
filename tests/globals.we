@@ -2,4 +2,4 @@
 double: (* [2, x])
 quadruple: (double (double x))
 
-main: () (quadruple 3)
+main: (quadruple 3)

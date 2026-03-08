@@ -40,10 +40,9 @@ impl std::fmt::Display for ParseError {
             ParseError::UnexpectedCloseParen => write!(f, "unexpected ')'"),
             ParseError::UnexpectedCloseBracket => write!(f, "unexpected ']'"),
             ParseError::MissingQuoteTarget => write!(f, "quote requires an expression"),
-            ParseError::InvalidFuncDef => write!(
-                f,
-                "invalid function definition: expected 'name: () body' or 'name: body'"
-            ),
+            ParseError::InvalidFuncDef => {
+                write!(f, "invalid function definition: expected 'name: body'")
+            }
             ParseError::UnexpectedTopLevel => write!(
                 f,
                 "unexpected expression at top level: only function definitions are allowed"
@@ -68,11 +67,12 @@ fn is_func_def_start(tokens: &[Token], pos: usize) -> bool {
 ///
 /// Only function definitions are allowed at the top level:
 ///
-/// - `name: () body`  — zero-arg function
-/// - `name: body`     — one-arg function; the input is implicitly bound to `x`
+/// - `name: body`  — function with implicit parameter `x`
 ///
-/// The body is exactly one expression (monadic). Multi-arg functions do not
-/// exist; pass a tuple `[a, b]` to built-in operators instead.
+/// If the body does not reference `x`, the function behaves as a
+/// zero-argument function. The body is exactly one expression (monadic).
+/// Multi-arg functions do not exist; pass a tuple `[a, b]` to built-in
+/// operators instead.
 pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     let tokens = tokenize(input)?;
     let mut pos = 0;
@@ -89,18 +89,8 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
         };
         pos += 2; // consume name and colon
 
-        // Determine arity.
-        // `()` immediately after `:` → zero-arg.
-        // Anything else → one-arg with implicit `x`.
-        let param_names: Vec<String> = if pos + 1 < tokens.len()
-            && tokens[pos] == Token::LParen
-            && tokens[pos + 1] == Token::RParen
-        {
-            pos += 2; // consume `()`
-            vec![]
-        } else {
-            vec!["x".to_string()]
-        };
+        // All functions have an implicit parameter `x`.
+        let param_names: Vec<String> = vec!["x".to_string()];
 
         // Parse exactly one body expression.
         if pos >= tokens.len() || is_func_def_start(&tokens, pos) {
@@ -252,35 +242,34 @@ mod tests {
     #[test]
     fn test_multi_body_is_error() {
         // After `1` the `2` is not a func def start.
-        assert_eq!(
-            parse("f: () 1 2").unwrap_err(),
-            ParseError::UnexpectedTopLevel
-        );
+        assert_eq!(parse("f: 1 2").unwrap_err(), ParseError::UnexpectedTopLevel);
     }
 
     #[test]
     fn test_expr_after_func_def_is_error() {
         assert_eq!(
-            parse("main: () 0\n42").unwrap_err(),
+            parse("main: 0\n42").unwrap_err(),
             ParseError::UnexpectedTopLevel
         );
     }
 
-    // ---- zero-arg function defs ----------------------------------------------
+    // ---- function defs -------------------------------------------------------
 
     #[test]
-    fn test_zero_arg_func() {
+    fn test_func_def() {
+        // `main: 0` — implicit param `x`, body doesn't reference it
         assert_eq!(
-            parse("main: () 0").unwrap(),
+            parse("main: 0").unwrap(),
             vec![Expr::List(vec![
                 Expr::Symbol("define".to_string()),
-                Expr::List(vec![Expr::Symbol("main".to_string())]),
+                Expr::List(vec![
+                    Expr::Symbol("main".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
                 Expr::Number(0.0),
             ])]
         );
     }
-
-    // ---- one-arg function defs -----------------------------------------------
 
     #[test]
     fn test_one_arg_func() {
@@ -303,18 +292,21 @@ mod tests {
 
     #[test]
     fn test_multiple_func_defs() {
-        let result = parse("foo: () 1\nbar: (* [2, x])").unwrap();
+        let result = parse("foo: 1\nbar: (* [2, x])").unwrap();
         assert_eq!(result.len(), 2);
-        // foo is zero-arg
+        // foo has implicit x but doesn't use it
         assert_eq!(
             result[0],
             Expr::List(vec![
                 Expr::Symbol("define".to_string()),
-                Expr::List(vec![Expr::Symbol("foo".to_string())]),
+                Expr::List(vec![
+                    Expr::Symbol("foo".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
                 Expr::Number(1.0),
             ])
         );
-        // bar is one-arg
+        // bar uses x
         assert_eq!(
             result[1],
             Expr::List(vec![
@@ -371,14 +363,15 @@ mod tests {
 
     #[test]
     fn test_missing_body() {
-        assert_eq!(parse("foo: ()").unwrap_err(), ParseError::InvalidFuncDef);
+        // `foo:` at EOF — no body expression
+        assert_eq!(parse("foo:").unwrap_err(), ParseError::InvalidFuncDef);
     }
 
     #[test]
-    fn test_missing_body_one_arg() {
+    fn test_missing_body_before_next_def() {
         // `foo:` followed by another func def with no body for foo
         assert_eq!(
-            parse("foo:\nbar: () 1").unwrap_err(),
+            parse("foo:\nbar: 1").unwrap_err(),
             ParseError::InvalidFuncDef
         );
     }
@@ -386,7 +379,7 @@ mod tests {
     #[test]
     fn test_unmatched_open_paren() {
         assert_eq!(
-            parse("f: () (+ 1 2").unwrap_err(),
+            parse("f: (+ 1 2").unwrap_err(),
             ParseError::UnmatchedOpenParen
         );
     }
@@ -401,16 +394,13 @@ mod tests {
 
     #[test]
     fn test_missing_quote_target() {
-        assert_eq!(
-            parse("f: () '").unwrap_err(),
-            ParseError::MissingQuoteTarget
-        );
+        assert_eq!(parse("f: '").unwrap_err(), ParseError::MissingQuoteTarget);
     }
 
     #[test]
     fn test_lex_error_propagated() {
         assert!(matches!(
-            parse(r#"f: () "unterminated"#).unwrap_err(),
+            parse(r#"f: "unterminated"#).unwrap_err(),
             ParseError::Lex(_)
         ));
     }
@@ -418,10 +408,13 @@ mod tests {
     #[test]
     fn test_comment_ignored() {
         assert_eq!(
-            parse("; ignore\nmain: () 0").unwrap(),
+            parse("; ignore\nmain: 0").unwrap(),
             vec![Expr::List(vec![
                 Expr::Symbol("define".to_string()),
-                Expr::List(vec![Expr::Symbol("main".to_string())]),
+                Expr::List(vec![
+                    Expr::Symbol("main".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
                 Expr::Number(0.0),
             ])]
         );

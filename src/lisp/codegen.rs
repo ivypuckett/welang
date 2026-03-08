@@ -63,8 +63,10 @@ fn make_sig(
 /// Compile a slice of top-level AST nodes into an ELF object file (raw bytes).
 ///
 /// Top-level forms (produced by the parser):
-///   `(define (name) body)`      — zero-arg function
-///   `(define (name x) body)`    — one-arg function; input is `x`
+///   `(define (name x) body)`    — function with implicit parameter `x`
+///
+/// If `body` does not reference `x`, the function behaves as a
+/// zero-argument function. `main` is always compiled with no ABI parameters.
 ///
 /// Inside function bodies:
 ///   number / bool literals
@@ -157,13 +159,17 @@ fn compile_function(
         let mut locals: HashMap<String, Variable> = HashMap::new();
         let mut next_var: usize = 0;
 
-        for (i, pname) in param_names.iter().enumerate() {
-            let var = Variable::from_u32(next_var as u32);
-            next_var += 1;
-            builder.declare_var(var, types::I64);
-            let pval = builder.block_params(entry)[i];
-            builder.def_var(var, pval);
-            locals.insert(pname.to_string(), var);
+        // `main` has no ABI parameters (the OS entry point convention),
+        // so skip binding `x` even though the parser always emits it.
+        if !info.is_main {
+            for (i, pname) in param_names.iter().enumerate() {
+                let var = Variable::from_u32(next_var as u32);
+                next_var += 1;
+                builder.declare_var(var, types::I64);
+                let pval = builder.block_params(entry)[i];
+                builder.def_var(var, pval);
+                locals.insert(pname.to_string(), var);
+            }
         }
 
         let mut result = builder.ins().iconst(types::I64, 0);
