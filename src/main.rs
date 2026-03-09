@@ -19,7 +19,11 @@ fn main() {
     });
 
     let exprs = lisp::parser::parse(&source).unwrap_or_else(|e| {
-        eprintln!("we: parse error: {}", e);
+        let line_text = source.lines().nth(e.line - 1).unwrap_or("").trim_end();
+        eprintln!("{}:{}: error: {}", source_path, e.line, e);
+        if !line_text.is_empty() {
+            eprintln!("  {}", line_text);
+        }
         process::exit(1);
     });
 

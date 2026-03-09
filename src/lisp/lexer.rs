@@ -15,37 +15,58 @@ pub enum Token {
     Symbol(String),
 }
 
-/// Errors that can occur during lexing.
+/// The kind of error that occurred during lexing.
 #[derive(Debug, PartialEq)]
-pub enum LexError {
+pub enum LexErrorKind {
     UnterminatedString,
     InvalidNumber(String),
 }
 
-impl std::fmt::Display for LexError {
+impl std::fmt::Display for LexErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LexError::UnterminatedString => write!(f, "unterminated string literal"),
-            LexError::InvalidNumber(s) => write!(f, "invalid number: {s}"),
+            LexErrorKind::UnterminatedString => write!(f, "unterminated string literal"),
+            LexErrorKind::InvalidNumber(s) => write!(f, "invalid number: {s}"),
         }
     }
 }
 
-/// Tokenize a LISP source string into a list of tokens.
-pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
+/// An error that occurred during lexing, with a 1-indexed line number.
+#[derive(Debug, PartialEq)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub line: usize,
+}
+
+impl std::fmt::Display for LexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+/// Tokenize a LISP source string into a list of `(token, line)` pairs.
+/// Line numbers are 1-indexed.
+pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
+    let mut line: usize = 1;
 
     while let Some(&c) = chars.peek() {
         match c {
-            ' ' | '\t' | '\n' | '\r' => {
+            ' ' | '\t' | '\r' => {
                 chars.next();
+            }
+
+            '\n' => {
+                chars.next();
+                line += 1;
             }
 
             ';' => {
                 while let Some(&ch) = chars.peek() {
                     chars.next();
                     if ch == '\n' {
+                        line += 1;
                         break;
                     }
                 }
@@ -53,38 +74,39 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
 
             '(' => {
                 chars.next();
-                tokens.push(Token::LParen);
+                tokens.push((Token::LParen, line));
             }
             ')' => {
                 chars.next();
-                tokens.push(Token::RParen);
+                tokens.push((Token::RParen, line));
             }
             '[' => {
                 chars.next();
-                tokens.push(Token::LBracket);
+                tokens.push((Token::LBracket, line));
             }
             ']' => {
                 chars.next();
-                tokens.push(Token::RBracket);
+                tokens.push((Token::RBracket, line));
             }
             ',' => {
                 chars.next();
-                tokens.push(Token::Comma);
+                tokens.push((Token::Comma, line));
             }
             ':' => {
                 chars.next();
-                tokens.push(Token::Colon);
+                tokens.push((Token::Colon, line));
             }
             '|' => {
                 chars.next();
-                tokens.push(Token::Pipe);
+                tokens.push((Token::Pipe, line));
             }
             '\'' => {
                 chars.next();
-                tokens.push(Token::Quote);
+                tokens.push((Token::Quote, line));
             }
 
             '"' => {
+                let string_line = line;
                 chars.next();
                 let mut s = String::new();
                 let mut closed = false;
@@ -94,6 +116,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                         '"' => {
                             closed = true;
                             break;
+                        }
+                        '\n' => {
+                            line += 1;
+                            s.push('\n');
                         }
                         '\\' => match chars.peek() {
                             Some(&'n') => {
@@ -124,9 +150,12 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                     }
                 }
                 if !closed {
-                    return Err(LexError::UnterminatedString);
+                    return Err(LexError {
+                        kind: LexErrorKind::UnterminatedString,
+                        line: string_line,
+                    });
                 }
-                tokens.push(Token::Str(s));
+                tokens.push((Token::Str(s), string_line));
             }
 
             '#' => {
@@ -134,19 +163,20 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                 match chars.peek() {
                     Some(&'t') => {
                         chars.next();
-                        tokens.push(Token::Bool(true));
+                        tokens.push((Token::Bool(true), line));
                     }
                     Some(&'f') => {
                         chars.next();
-                        tokens.push(Token::Bool(false));
+                        tokens.push((Token::Bool(false), line));
                     }
                     _ => {
-                        tokens.push(Token::Symbol("#".to_string()));
+                        tokens.push((Token::Symbol("#".to_string()), line));
                     }
                 }
             }
 
             _ => {
+                let word_line = line;
                 let mut word = String::new();
                 while let Some(&ch) = chars.peek() {
                     if ch.is_whitespace()
@@ -167,11 +197,16 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                 }
                 if looks_like_number(&word) {
                     match word.parse::<f64>() {
-                        Ok(n) => tokens.push(Token::Number(n)),
-                        Err(_) => return Err(LexError::InvalidNumber(word)),
+                        Ok(n) => tokens.push((Token::Number(n), word_line)),
+                        Err(_) => {
+                            return Err(LexError {
+                                kind: LexErrorKind::InvalidNumber(word),
+                                line: word_line,
+                            });
+                        }
                     }
                 } else {
-                    tokens.push(Token::Symbol(word));
+                    tokens.push((Token::Symbol(word), word_line));
                 }
             }
         }
@@ -198,38 +233,48 @@ fn looks_like_number(word: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Strip line numbers from tokenize output for brevity in most tests.
+    fn tok(input: &str) -> Vec<Token> {
+        tokenize(input)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect()
+    }
+
+    fn tok_err(input: &str) -> LexErrorKind {
+        tokenize(input).unwrap_err().kind
+    }
+
     #[test]
     fn test_empty_input() {
-        assert_eq!(tokenize("").unwrap(), vec![]);
+        assert_eq!(tok(""), vec![]);
     }
 
     #[test]
     fn test_parens() {
-        assert_eq!(tokenize("()").unwrap(), vec![Token::LParen, Token::RParen]);
+        assert_eq!(tok("()"), vec![Token::LParen, Token::RParen]);
     }
 
     #[test]
     fn test_integer() {
-        assert_eq!(tokenize("42").unwrap(), vec![Token::Number(42.0)]);
+        assert_eq!(tok("42"), vec![Token::Number(42.0)]);
     }
 
     #[test]
     fn test_negative_number() {
-        assert_eq!(tokenize("-3").unwrap(), vec![Token::Number(-3.0)]);
+        assert_eq!(tok("-3"), vec![Token::Number(-3.0)]);
     }
 
     #[test]
     fn test_symbol() {
-        assert_eq!(
-            tokenize("foo").unwrap(),
-            vec![Token::Symbol("foo".to_string())]
-        );
+        assert_eq!(tok("foo"), vec![Token::Symbol("foo".to_string())]);
     }
 
     #[test]
     fn test_operator_symbols() {
         assert_eq!(
-            tokenize("+ - * /").unwrap(),
+            tok("+ - * /"),
             vec![
                 Token::Symbol("+".to_string()),
                 Token::Symbol("-".to_string()),
@@ -241,37 +286,34 @@ mod tests {
 
     #[test]
     fn test_bool_true() {
-        assert_eq!(tokenize("#t").unwrap(), vec![Token::Bool(true)]);
+        assert_eq!(tok("#t"), vec![Token::Bool(true)]);
     }
 
     #[test]
     fn test_string() {
-        assert_eq!(
-            tokenize(r#""hello""#).unwrap(),
-            vec![Token::Str("hello".to_string())]
-        );
+        assert_eq!(tok(r#""hello""#), vec![Token::Str("hello".to_string())]);
     }
 
     #[test]
     fn test_unterminated_string() {
-        assert_eq!(
-            tokenize(r#""oops"#).unwrap_err(),
-            LexError::UnterminatedString
-        );
+        assert_eq!(tok_err(r#""oops"#), LexErrorKind::UnterminatedString);
+    }
+
+    #[test]
+    fn test_unterminated_string_line() {
+        let err = tokenize("foo\n\"oops").unwrap_err();
+        assert_eq!(err.line, 2);
     }
 
     #[test]
     fn test_line_comment() {
-        assert_eq!(
-            tokenize("; comment\n42").unwrap(),
-            vec![Token::Number(42.0)]
-        );
+        assert_eq!(tok("; comment\n42"), vec![Token::Number(42.0)]);
     }
 
     #[test]
     fn test_colon() {
         assert_eq!(
-            tokenize("foo:").unwrap(),
+            tok("foo:"),
             vec![Token::Symbol("foo".to_string()), Token::Colon]
         );
     }
@@ -279,7 +321,7 @@ mod tests {
     #[test]
     fn test_tuple_tokens() {
         assert_eq!(
-            tokenize("[1, 2]").unwrap(),
+            tok("[1, 2]"),
             vec![
                 Token::LBracket,
                 Token::Number(1.0),
@@ -293,7 +335,7 @@ mod tests {
     #[test]
     fn test_func_def_tokens() {
         assert_eq!(
-            tokenize("double: (* [2, x])").unwrap(),
+            tok("double: (* [2, x])"),
             vec![
                 Token::Symbol("double".to_string()),
                 Token::Colon,
@@ -307,5 +349,12 @@ mod tests {
                 Token::RParen,
             ]
         );
+    }
+
+    #[test]
+    fn test_line_numbers() {
+        let tokens = tokenize("foo\nbar\nbaz").unwrap();
+        let lines: Vec<usize> = tokens.iter().map(|(_, l)| *l).collect();
+        assert_eq!(lines, vec![1, 2, 3]);
     }
 }
