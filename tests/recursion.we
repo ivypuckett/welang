@@ -1,12 +1,12 @@
 # Tests recursive function calls.
 factorial:
-  (if [(lte [x, 1]),
+  (if [(less-than-or-equal [x, 1]),
     1,
-    (mul [x, (factorial (sub [x, 1]))])])
+    (multiply [x, (factorial (subtract [x, 1]))])])
 
 fib:
-  (if [(lt [x, 2]),
+  (if [(less-than [x, 2]),
     x,
-    (add [(fib (sub [x, 1])), (fib (sub [x, 2]))])])
+    (add [(fib (subtract [x, 1])), (fib (subtract [x, 2]))])])
 
-main: (if [(eq [(factorial 5), 120]), 0, 1])
+main: (if [(equal [(factorial 5), 120]), 0, 1])

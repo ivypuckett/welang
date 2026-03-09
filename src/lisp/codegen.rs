@@ -84,8 +84,8 @@ fn make_sig(
 /// Inside function bodies:
 ///   number / bool literals
 ///   `x`                         — the implicit input parameter
-///   `(op [a, b])`               — arithmetic: `add  sub  mul  div`
-///   `(op [a, b])`               — comparison: `eq  lt  gt  lte  gte`  (returns 0 or 1)
+///   `(op [a, b])`               — arithmetic: `add  subtract  multiply  divide`
+///   `(op [a, b])`               — comparison: `equal  less-than  greater-than  less-than-or-equal  greater-than-or-equal`  (returns 0 or 1)
 ///   `(if [cond, then])`         — conditional (else = 0)
 ///   `(if [cond, then, else])`   — conditional with else branch
 ///   `(name: body)`              — rename `x` to `name` in `body`
@@ -317,13 +317,24 @@ fn compile_expr(
         ),
 
         Expr::List(items) => match &items[0] {
-            Expr::Symbol(op) if matches!(op.as_str(), "add" | "sub" | "mul" | "div") => {
+            Expr::Symbol(op)
+                if matches!(op.as_str(), "add" | "subtract" | "multiply" | "divide") =>
+            {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
                 compile_arith(
                     builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
                 )
             }
-            Expr::Symbol(op) if matches!(op.as_str(), "eq" | "lt" | "gt" | "lte" | "gte") => {
+            Expr::Symbol(op)
+                if matches!(
+                    op.as_str(),
+                    "equal"
+                        | "less-than"
+                        | "greater-than"
+                        | "less-than-or-equal"
+                        | "greater-than-or-equal"
+                ) =>
+            {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
                 compile_cmp(
                     builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
@@ -398,9 +409,9 @@ fn compile_arith(
     let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     Ok(match op {
         "add" => builder.ins().iadd(lv, rv),
-        "sub" => builder.ins().isub(lv, rv),
-        "mul" => builder.ins().imul(lv, rv),
-        "div" => builder.ins().sdiv(lv, rv),
+        "subtract" => builder.ins().isub(lv, rv),
+        "multiply" => builder.ins().imul(lv, rv),
+        "divide" => builder.ins().sdiv(lv, rv),
         _ => unreachable!(),
     })
 }
@@ -420,11 +431,11 @@ fn compile_cmp(
     let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
     let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     let cc = match op {
-        "eq" => IntCC::Equal,
-        "lt" => IntCC::SignedLessThan,
-        "gt" => IntCC::SignedGreaterThan,
-        "lte" => IntCC::SignedLessThanOrEqual,
-        "gte" => IntCC::SignedGreaterThanOrEqual,
+        "equal" => IntCC::Equal,
+        "less-than" => IntCC::SignedLessThan,
+        "greater-than" => IntCC::SignedGreaterThan,
+        "less-than-or-equal" => IntCC::SignedLessThanOrEqual,
+        "greater-than-or-equal" => IntCC::SignedGreaterThanOrEqual,
         _ => unreachable!(),
     };
     let b = builder.ins().icmp(cc, lv, rv);

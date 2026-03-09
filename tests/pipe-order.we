@@ -17,19 +17,19 @@
 # Any other execution order produces a different value, so main
 # returns 0 (success) only when the pipeline ran steps 1-10 in order.
 
-n1: (add [(mul [2, x]), 1])
-n2: (add [(mul [2, x]), 2])
-n3: (add [(mul [2, x]), 3])
-n4: (add [(mul [2, x]), 4])
-n5: (add [(mul [2, x]), 5])
-n6: (add [(mul [2, x]), 6])
-n7: (add [(mul [2, x]), 7])
-n8: (add [(mul [2, x]), 8])
-n9: (add [(mul [2, x]), 9])
-n10: (add [(mul [2, x]), 10])
+n1: (add [(multiply [2, x]), 1])
+n2: (add [(multiply [2, x]), 2])
+n3: (add [(multiply [2, x]), 3])
+n4: (add [(multiply [2, x]), 4])
+n5: (add [(multiply [2, x]), 5])
+n6: (add [(multiply [2, x]), 6])
+n7: (add [(multiply [2, x]), 7])
+n8: (add [(multiply [2, x]), 8])
+n9: (add [(multiply [2, x]), 9])
+n10: (add [(multiply [2, x]), 10])
 
 # Desugars to: (n10 (n9 (n8 (n7 (n6 (n5 (n4 (n3 (n2 (n1 x))))))))))
 # Mirrors the pattern (3 2 1 x | 5 4 | 6 | 10 9 8 7) from the spec.
 pipeline: (n3 n2 n1 x | n5 n4 | n6 | n10 n9 n8 n7)
 
-main: (if [(eq [(pipeline 0), 2036]), 0, 1])
+main: (if [(equal [(pipeline 0), 2036]), 0, 1])

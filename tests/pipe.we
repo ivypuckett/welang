@@ -3,7 +3,7 @@
 # (x | f) is syntactic sugar for (f x)
 # (x | f | g) desugars to (g (f x))  — left-associative
 
-double: (mul [2, x])
+double: (multiply [2, x])
 inc: (add [x, 1])
 
 # (x | double) == (double x)

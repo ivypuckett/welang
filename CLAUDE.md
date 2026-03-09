@@ -13,13 +13,13 @@ All top-level definitions use `name: body`. The input is always the implicit var
 main: 0
 
 # function that uses x — the implicit input variable
-double: (mul [2, x])
+double: (multiply [2, x])
 
 # multi-argument operations use tuple syntax [a, b]
 factorial:
-  (if [(lte [x, 1]),
+  (if [(less-than-or-equal [x, 1]),
     1,
-    (mul [x, (factorial (sub [x, 1]))])])
+    (multiply [x, (factorial (subtract [x, 1]))])])
 ```
 
 There is no `define` keyword. Every definition is a function definition.
@@ -30,7 +30,7 @@ Anything else at the top level is a compile-time error.
 
 - All functions use `name: body` syntax. The implicit parameter is always `x`.
 - Multi-argument operations use a **tuple**: `[a, b]`.
-- Built-in operators (`add sub mul div eq lt gt lte gte`) each take a 2-element tuple.
+- Built-in operators (`add subtract multiply divide equal less-than greater-than less-than-or-equal greater-than-or-equal`) each take a 2-element tuple.
 - `if` takes a 2- or 3-element tuple: `(if [cond, then])` or `(if [cond, then, else])`.
 - `(name: body)` renames the implicit `x` to `name` within `body` (useful for closures).
 

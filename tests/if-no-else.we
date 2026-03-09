@@ -1,10 +1,10 @@
 # Tests that (if [cond, then]) returns 0 when the condition is false
 # (no else branch means the implicit else value is 0).
-clamp-positive: (if [(gt [x, 0]), x])
+clamp-positive: (if [(greater-than [x, 0]), x])
 
 main:
-  (if [(eq [(clamp-positive -5), 0]),
-    (if [(eq [(clamp-positive 3), 3]),
+  (if [(equal [(clamp-positive -5), 0]),
+    (if [(equal [(clamp-positive 3), 3]),
       0,
       1]),
     1])
