@@ -51,9 +51,18 @@ cargo fmt                  # Format code
 cargo clippy -- -D warnings  # Lint (all warnings are errors)
 ```
 
-Also compile every file in `tests/` to make sure none of them regress:
+Also compile and run every file in `tests/` to make sure none of them regress:
 
 ```sh
 cargo build
-for f in tests/*.we; do echo "Compiling $f ..."; ./target/debug/we "$f"; done
+for f in tests/*.we; do
+  echo "Compiling $f ..."
+  ./target/debug/we "$f"
+  stem="${f%.we}"; stem="${stem##*/}"
+  echo "Running $stem ..."
+  if ! ./"$stem"; then
+    echo "FAILED: $stem exited with non-zero status"
+    exit 1
+  fi
+done
 ```
