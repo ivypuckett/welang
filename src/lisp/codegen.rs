@@ -85,7 +85,7 @@ fn make_sig(
 ///   number / bool literals
 ///   `x`                         — the implicit input parameter
 ///   `(op [a, b])`               — arithmetic: `add  subtract  multiply  divide`
-///   `(op [a, b])`               — comparison: `equal  less-than  greater-than  less-than-or-equal  greater-than-or-equal`  (returns 0 or 1)
+///   `(op [a, b])`               — comparison: `equal  lessThan  greaterThan  lessThanOrEqual  greaterThanOrEqual`  (returns 0 or 1)
 ///   `(if [cond, then])`         — conditional (else = 0)
 ///   `(if [cond, then, else])`   — conditional with else branch
 ///   `(name: body)`              — rename `x` to `name` in `body`
@@ -328,11 +328,7 @@ fn compile_expr(
             Expr::Symbol(op)
                 if matches!(
                     op.as_str(),
-                    "equal"
-                        | "less-than"
-                        | "greater-than"
-                        | "less-than-or-equal"
-                        | "greater-than-or-equal"
+                    "equal" | "lessThan" | "greaterThan" | "lessThanOrEqual" | "greaterThanOrEqual"
                 ) =>
             {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
@@ -432,10 +428,10 @@ fn compile_cmp(
     let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     let cc = match op {
         "equal" => IntCC::Equal,
-        "less-than" => IntCC::SignedLessThan,
-        "greater-than" => IntCC::SignedGreaterThan,
-        "less-than-or-equal" => IntCC::SignedLessThanOrEqual,
-        "greater-than-or-equal" => IntCC::SignedGreaterThanOrEqual,
+        "lessThan" => IntCC::SignedLessThan,
+        "greaterThan" => IntCC::SignedGreaterThan,
+        "lessThanOrEqual" => IntCC::SignedLessThanOrEqual,
+        "greaterThanOrEqual" => IntCC::SignedGreaterThanOrEqual,
         _ => unreachable!(),
     };
     let b = builder.ins().icmp(cc, lv, rv);

@@ -17,7 +17,7 @@ double: (multiply [2, x])
 
 # multi-argument operations use tuple syntax [a, b]
 factorial:
-  (if [(less-than-or-equal [x, 1]),
+  (if [(lessThanOrEqual [x, 1]),
     1,
     (multiply [x, (factorial (subtract [x, 1]))])])
 ```
@@ -30,7 +30,7 @@ Anything else at the top level is a compile-time error.
 
 - All functions use `name: body` syntax. The implicit parameter is always `x`.
 - Multi-argument operations use a **tuple**: `[a, b]`.
-- Built-in operators (`add subtract multiply divide equal less-than greater-than less-than-or-equal greater-than-or-equal`) each take a 2-element tuple.
+- Built-in operators (`add subtract multiply divide equal lessThan greaterThan lessThanOrEqual greaterThanOrEqual`) each take a 2-element tuple.
 - `if` takes a 2- or 3-element tuple: `(if [cond, then])` or `(if [cond, then, else])`.
 - `(name: body)` renames the implicit `x` to `name` within `body` (useful for closures).
 
