@@ -1,4 +1,4 @@
-; Tests that (print "string") prints the string and returns 0.
+# Tests that (print "string") prints the string and returns 0.
 main:
   (if [(= [(print "hello, world"), 0]),
     0,

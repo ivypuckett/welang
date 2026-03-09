@@ -1,21 +1,21 @@
-; Tests for the forward pipe operator |
-;
-; (x | f) is syntactic sugar for (f x)
-; (x | f | g) desugars to (g (f x))  — left-associative
+# Tests for the forward pipe operator |
+#
+# (x | f) is syntactic sugar for (f x)
+# (x | f | g) desugars to (g (f x))  — left-associative
 
 double: (* [2, x])
 inc: (+ [x, 1])
 
-; (x | double) == (double x)
+# (x | double) == (double x)
 pipe_once: (x | double)
 
-; (x | double | double) == (double (double x))
+# (x | double | double) == (double (double x))
 pipe_twice: (x | double | double)
 
-; (double x | inc) == (inc (double x))
+# (double x | inc) == (inc (double x))
 pipe_mix: (double x | inc)
 
-; pipe with a sub-expression on the left: (double x | double | inc)
+# pipe with a sub-expression on the left: (double x | double | inc)
 pipe_long: (double x | double | inc)
 
 main: 0

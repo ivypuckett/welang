@@ -1,12 +1,12 @@
-; Tests that boolean literals #t and #f compile to 1 and 0 respectively,
-; and that they can be used as conditions and passed as arguments.
+# Tests that boolean literals true and false compile to 1 and 0 respectively,
+# and that they can be used as conditions and passed as arguments.
 bool-result: (if [x, 1, 0])
 
 main:
-  (if [(= [#t, 1]),
-    (if [(= [#f, 0]),
-      (if [(= [(bool-result #t), 1]),
-        (if [(= [(bool-result #f), 0]),
+  (if [(= [true, 1]),
+    (if [(= [false, 0]),
+      (if [(= [(bool-result true), 1]),
+        (if [(= [(bool-result false), 0]),
           0,
           1]),
         1]),

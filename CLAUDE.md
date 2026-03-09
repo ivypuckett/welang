@@ -9,13 +9,13 @@ welang is a programming language implemented in Rust. The CLI binary is named `w
 All top-level definitions use `name: body`. The input is always the implicit variable `x`. If the body doesn't reference `x`, the function behaves like a zero-argument function:
 
 ```
-; function that doesn't use x — behaves like zero-argument
+# function that doesn't use x — behaves like zero-argument
 main: 0
 
-; function that uses x — the implicit input variable
+# function that uses x — the implicit input variable
 double: (* [2, x])
 
-; multi-argument operations use tuple syntax [a, b]
+# multi-argument operations use tuple syntax [a, b]
 factorial:
   (if [(<= [x, 1]),
     1,

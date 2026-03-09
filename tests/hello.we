@@ -1,2 +1,2 @@
-; Minimal welang program — entry point returns 0.
+# Minimal welang program — entry point returns 0.
 main: 0

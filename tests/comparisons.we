@@ -1,4 +1,4 @@
-; Tests comparison operators with tuple arguments.
+# Tests comparison operators with tuple arguments.
 clamp10: (if [(< [x, 0]), 0, (if [(> [x, 10]), 10, x])])
 is-pos: (> [x, 0])
 is-neg: (< [x, 0])
