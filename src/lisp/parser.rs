@@ -14,6 +14,9 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     /// A map literal: `{k1: v1, k2: v2, ...}`.
     Map(Vec<(String, Expr)>),
+    /// A conditional expression: `{(cond1): v1, (cond2): v2, _: default}`.
+    /// `None` in the key position represents the wildcard `_`.
+    Cond(Vec<(Option<Expr>, Expr)>),
     /// A rename-binding expression: `(y: body)` — binds `y = x` in `body`.
     Rename(String, Box<Expr>),
 }
@@ -35,12 +38,18 @@ pub enum ParseErrorKind {
     UnexpectedPipe,
     /// A pipe segment was empty (e.g. `(| f)` or `(f |)`).
     EmptyPipeSegment,
-    /// A `{` map literal was not closed.
+    /// A `{` map or conditional literal was not closed.
     UnmatchedOpenBrace,
-    /// A `}` appeared outside of a map literal.
+    /// A `}` appeared outside of a map or conditional literal.
     UnexpectedCloseBrace,
     /// A map entry was malformed (expected `key: value`).
     InvalidMapEntry,
+    /// A conditional entry was malformed (expected `(expr): value` or `_: value`).
+    InvalidCondEntry,
+    /// A conditional expression is missing its required `_: value` wildcard.
+    MissingCondWildcard,
+    /// The `_` wildcard appeared before the last entry in a conditional.
+    MisplacedCondWildcard,
 }
 
 impl std::fmt::Display for ParseErrorKind {
@@ -73,6 +82,18 @@ impl std::fmt::Display for ParseErrorKind {
             ParseErrorKind::InvalidMapEntry => {
                 write!(f, "invalid map entry: expected 'key: value'")
             }
+            ParseErrorKind::InvalidCondEntry => write!(
+                f,
+                "invalid conditional entry: expected '(condition): value' or '_: value'"
+            ),
+            ParseErrorKind::MissingCondWildcard => write!(
+                f,
+                "conditional expression requires a '_: value' wildcard as the last entry"
+            ),
+            ParseErrorKind::MisplacedCondWildcard => write!(
+                f,
+                "the '_' wildcard must be the last entry in a conditional"
+            ),
         }
     }
 }
@@ -292,44 +313,110 @@ fn parse_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseE
 
         Token::LBrace => {
             *pos += 1;
-            let mut entries: Vec<(String, Expr)> = Vec::new();
-            loop {
-                if *pos >= tokens.len() {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnmatchedOpenBrace,
-                        line: tok_line,
-                    });
-                }
-                if tokens[*pos].0 == Token::RBrace {
-                    *pos += 1;
-                    break;
-                }
-                // Expect: Symbol Colon Expr
-                let key = match &tokens[*pos].0 {
-                    Token::Symbol(s) => s.clone(),
-                    _ => {
+
+            // Determine whether this is a conditional `{(cond): v, ..., _: v}`
+            // or a data map `{key: v, ...}`.  A leading `(` or `_` signals Cond.
+            let is_cond = *pos < tokens.len()
+                && match &tokens[*pos].0 {
+                    Token::LParen => true,
+                    Token::Symbol(s) if s == "_" => true,
+                    _ => false,
+                };
+
+            if is_cond {
+                let mut entries: Vec<(Option<Expr>, Expr)> = Vec::new();
+                let mut has_wildcard = false;
+                loop {
+                    if *pos >= tokens.len() {
                         return Err(ParseError {
-                            kind: ParseErrorKind::InvalidMapEntry,
+                            kind: ParseErrorKind::UnmatchedOpenBrace,
+                            line: tok_line,
+                        });
+                    }
+                    if tokens[*pos].0 == Token::RBrace {
+                        *pos += 1;
+                        break;
+                    }
+                    if has_wildcard {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::MisplacedCondWildcard,
                             line: tokens[*pos].1,
                         });
                     }
-                };
-                *pos += 1; // consume key
-                if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
+                    // Parse key: `(expr)` or `_`.
+                    let key = if tokens[*pos].0 == Token::LParen {
+                        Some(parse_expr(tokens, pos)?)
+                    } else if matches!(&tokens[*pos].0, Token::Symbol(s) if s == "_") {
+                        *pos += 1;
+                        has_wildcard = true;
+                        None
+                    } else {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidCondEntry,
+                            line: tokens[*pos].1,
+                        });
+                    };
+                    if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidCondEntry,
+                            line: line_at(tokens, *pos),
+                        });
+                    }
+                    *pos += 1; // consume colon
+                    let val = parse_expr(tokens, pos)?;
+                    entries.push((key, val));
+                    // Skip optional comma separator.
+                    if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
+                        *pos += 1;
+                    }
+                }
+                if !has_wildcard {
                     return Err(ParseError {
-                        kind: ParseErrorKind::InvalidMapEntry,
-                        line: line_at(tokens, *pos),
+                        kind: ParseErrorKind::MissingCondWildcard,
+                        line: tok_line,
                     });
                 }
-                *pos += 1; // consume colon
-                let val = parse_expr(tokens, pos)?;
-                entries.push((key, val));
-                // Skip optional comma separator.
-                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
-                    *pos += 1;
+                Ok(Expr::Cond(entries))
+            } else {
+                let mut entries: Vec<(String, Expr)> = Vec::new();
+                loop {
+                    if *pos >= tokens.len() {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::UnmatchedOpenBrace,
+                            line: tok_line,
+                        });
+                    }
+                    if tokens[*pos].0 == Token::RBrace {
+                        *pos += 1;
+                        break;
+                    }
+                    // Expect: Symbol Colon Expr
+                    let key = match &tokens[*pos].0 {
+                        Token::Symbol(s) => s.clone(),
+                        _ => {
+                            return Err(ParseError {
+                                kind: ParseErrorKind::InvalidMapEntry,
+                                line: tokens[*pos].1,
+                            });
+                        }
+                    };
+                    *pos += 1; // consume key
+                    if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidMapEntry,
+                            line: line_at(tokens, *pos),
+                        });
+                    }
+                    *pos += 1; // consume colon
+                    let val = parse_expr(tokens, pos)?;
+                    entries.push((key, val));
+                    // Skip optional comma separator.
+                    if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
+                        *pos += 1;
+                    }
                 }
+                Ok(Expr::Map(entries))
             }
-            Ok(Expr::Map(entries))
         }
 
         Token::RParen => Err(ParseError {
@@ -786,6 +873,88 @@ mod tests {
         assert_eq!(
             parse_err_kind("f: (double |)"),
             ParseErrorKind::EmptyPipeSegment
+        );
+    }
+
+    // ---- conditional expressions ---------------------------------------------
+
+    #[test]
+    fn test_cond_simple() {
+        // `f: {(x): 1, _: 0}`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("f: {(x): 1, _: 0}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                Expr::Cond(vec![
+                    (Some(Expr::List(vec![sym("x")])), Expr::Number(1.0)),
+                    (None, Expr::Number(0.0)),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_cond_multi_arm() {
+        // `f: {(lessThan [x, 0]): 1, (greaterThan [x, 0]): 2, _: 0}`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("f: {(lessThan [x, 0]): 1, (greaterThan [x, 0]): 2, _: 0}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                Expr::Cond(vec![
+                    (
+                        Some(Expr::List(vec![
+                            sym("lessThan"),
+                            Expr::Tuple(vec![sym("x"), Expr::Number(0.0)]),
+                        ])),
+                        Expr::Number(1.0),
+                    ),
+                    (
+                        Some(Expr::List(vec![
+                            sym("greaterThan"),
+                            Expr::Tuple(vec![sym("x"), Expr::Number(0.0)]),
+                        ])),
+                        Expr::Number(2.0),
+                    ),
+                    (None, Expr::Number(0.0)),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_cond_missing_wildcard_error() {
+        assert_eq!(
+            parse_err_kind("f: {(x): 1}"),
+            ParseErrorKind::MissingCondWildcard
+        );
+    }
+
+    #[test]
+    fn test_cond_misplaced_wildcard_error() {
+        assert_eq!(
+            parse_err_kind("f: {_: 0, (x): 1}"),
+            ParseErrorKind::MisplacedCondWildcard
+        );
+    }
+
+    #[test]
+    fn test_cond_wildcard_only() {
+        // `{_: 42}` — only a wildcard, always returns 42
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("f: {_: 42}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                Expr::Cond(vec![(None, Expr::Number(42.0))]),
+            ])
         );
     }
 }

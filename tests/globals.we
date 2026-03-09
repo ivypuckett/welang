@@ -2,4 +2,4 @@
 double: (multiply [2, x])
 quadruple: (double (double x))
 
-main: (if [(equal [(quadruple 3), 12]), 0, 1])
+main: {(equal [(quadruple 3), 12]): 0, _: 1}

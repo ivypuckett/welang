@@ -1,12 +1,12 @@
 # Tests recursive function calls.
 factorial:
-  (if [(lessThanOrEqual [x, 1]),
+  {(lessThanOrEqual [x, 1]):
     1,
-    (multiply [x, (factorial (subtract [x, 1]))])])
+  _: (multiply [x, (factorial (subtract [x, 1]))])}
 
 fib:
-  (if [(lessThan [x, 2]),
+  {(lessThan [x, 2]):
     x,
-    (add [(fib (subtract [x, 1])), (fib (subtract [x, 2]))])])
+  _: (add [(fib (subtract [x, 1])), (fib (subtract [x, 2]))])}
 
-main: (if [(equal [(factorial 5), 120]), 0, 1])
+main: {(equal [(factorial 5), 120]): 0, _: 1}

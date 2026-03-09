@@ -1,10 +1,7 @@
-# Tests that (if [cond, then]) returns 0 when the condition is false
-# (no else branch means the implicit else value is 0).
-clamp-positive: (if [(greaterThan [x, 0]), x])
+# Tests that the wildcard `_` arm is taken when no condition matches.
+clamp-positive: {(greaterThan [x, 0]): x, _: 0}
 
 main:
-  (if [(equal [(clamp-positive -5), 0]),
-    (if [(equal [(clamp-positive 3), 3]),
-      0,
-      1]),
-    1])
+  {(equal [(clamp-positive -5), 0]):
+    {(equal [(clamp-positive 3), 3]): 0, _: 1},
+  _: 1}

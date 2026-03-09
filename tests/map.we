@@ -2,8 +2,6 @@
 # Creates a map with two fields and retrieves each by name.
 
 main:
-  (if [(= [(get [{x: 10, y: 20}, x]), 10]),
-    (if [(= [(get [{x: 10, y: 20}, y]), 20]),
-      0,
-      1]),
-    1])
+  {(equal [(get [{x: 10, y: 20}, x]), 10]):
+    {(equal [(get [{x: 10, y: 20}, y]), 20]): 0, _: 1},
+  _: 1}

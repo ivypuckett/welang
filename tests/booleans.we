@@ -1,14 +1,12 @@
 # Tests that boolean literals true and false compile to 1 and 0 respectively,
 # and that they can be used as conditions and passed as arguments.
-bool-result: (if [x, 1, 0])
+bool-result: {(x): 1, _: 0}
 
 main:
-  (if [(equal [true, 1]),
-    (if [(equal [false, 0]),
-      (if [(equal [(bool-result true), 1]),
-        (if [(equal [(bool-result false), 0]),
-          0,
-          1]),
-        1]),
-      1]),
-    1])
+  {(equal [true, 1]):
+    {(equal [false, 0]):
+      {(equal [(bool-result true), 1]):
+        {(equal [(bool-result false), 0]): 0, _: 1},
+      _: 1},
+    _: 1},
+  _: 1}

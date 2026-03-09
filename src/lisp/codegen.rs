@@ -90,8 +90,7 @@ fn make_sig(
 ///   `x`                         — the implicit input parameter
 ///   `(op [a, b])`               — arithmetic: `add  subtract  multiply  divide`
 ///   `(op [a, b])`               — comparison: `equal  lessThan  greaterThan  lessThanOrEqual  greaterThanOrEqual`  (returns 0 or 1)
-///   `(if [cond, then])`         — conditional (else = 0)
-///   `(if [cond, then, else])`   — conditional with else branch
+///   `{(c1): v1, ..., _: v}`    — conditional: first truthy arm wins
 ///   `(name: body)`              — rename `x` to `name` in `body`
 ///   `(print x)`                 — print integer x as "%ld\n", returns x
 ///   `(print "s")`               — print string literal s followed by newline, returns 0
@@ -338,6 +337,10 @@ fn compile_expr(
             builder, module, registry, entries, locals, next_var, builtins,
         ),
 
+        Expr::Cond(entries) => compile_cond(
+            builder, module, registry, entries, locals, next_var, builtins,
+        ),
+
         Expr::List(items) if items.is_empty() => {
             Err("empty list () is not a valid expression".to_string())
         }
@@ -367,15 +370,6 @@ fn compile_expr(
                     builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
                 )
             }
-            Expr::Symbol(kw) if kw == "if" => compile_if(
-                builder,
-                module,
-                registry,
-                &items[1..],
-                locals,
-                next_var,
-                builtins,
-            ),
             Expr::Symbol(kw) if kw == "print" => compile_print(
                 builder,
                 module,
@@ -478,74 +472,55 @@ fn compile_cmp(
     Ok(builder.ins().uextend(types::I64, b))
 }
 
+/// Compile a conditional expression `{(cond1): v1, (cond2): v2, _: default}`.
+///
+/// Conditions are evaluated left to right; the value of the first arm whose
+/// condition is non-zero is returned.  The `_` wildcard (represented as
+/// `None`) is always the last entry and acts as the default.
 #[allow(clippy::too_many_arguments)]
-fn compile_if(
+fn compile_cond(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
-    args: &[Expr],
+    entries: &[(Option<Expr>, Expr)],
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
 ) -> Result<Value, CompileError> {
-    // Expect a 2-element `[cond, then]` or 3-element `[cond, then, else]` tuple.
-    let tuple_elems = match args {
-        [Expr::Tuple(elems)] if elems.len() == 2 || elems.len() == 3 => elems,
-        _ => {
-            return Err(
-                "'if' requires a tuple argument: [cond, then] or [cond, then, else]".to_string(),
-            );
-        }
-    };
-
-    let cond = compile_expr(
-        builder,
-        module,
-        registry,
-        &tuple_elems[0],
-        locals,
-        next_var,
-        builtins,
-    )?;
-    let zero = builder.ins().iconst(types::I64, 0);
-    let flag = builder.ins().icmp(IntCC::NotEqual, cond, zero);
-
-    let then_block = builder.create_block();
-    let else_block = builder.create_block();
     let merge_block = builder.create_block();
     builder.append_block_param(merge_block, types::I64);
 
-    builder.ins().brif(flag, then_block, &[], else_block, &[]);
+    for (cond_opt, val_expr) in entries {
+        match cond_opt {
+            Some(cond) => {
+                let cond_val =
+                    compile_expr(builder, module, registry, cond, locals, next_var, builtins)?;
+                let zero = builder.ins().iconst(types::I64, 0);
+                let flag = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
 
-    builder.switch_to_block(then_block);
-    builder.seal_block(then_block);
-    let then_val = compile_expr(
-        builder,
-        module,
-        registry,
-        &tuple_elems[1],
-        locals,
-        next_var,
-        builtins,
-    )?;
-    builder.ins().jump(merge_block, &[then_val]);
+                let val_block = builder.create_block();
+                let next_block = builder.create_block();
+                builder.ins().brif(flag, val_block, &[], next_block, &[]);
 
-    builder.switch_to_block(else_block);
-    builder.seal_block(else_block);
-    let else_val = if tuple_elems.len() == 3 {
-        compile_expr(
-            builder,
-            module,
-            registry,
-            &tuple_elems[2],
-            locals,
-            next_var,
-            builtins,
-        )?
-    } else {
-        builder.ins().iconst(types::I64, 0)
-    };
-    builder.ins().jump(merge_block, &[else_val]);
+                builder.switch_to_block(val_block);
+                builder.seal_block(val_block);
+                let val = compile_expr(
+                    builder, module, registry, val_expr, locals, next_var, builtins,
+                )?;
+                builder.ins().jump(merge_block, &[val]);
+
+                builder.switch_to_block(next_block);
+                builder.seal_block(next_block);
+            }
+            None => {
+                // Wildcard arm — always taken (must be last).
+                let val = compile_expr(
+                    builder, module, registry, val_expr, locals, next_var, builtins,
+                )?;
+                builder.ins().jump(merge_block, &[val]);
+            }
+        }
+    }
 
     builder.switch_to_block(merge_block);
     builder.seal_block(merge_block);

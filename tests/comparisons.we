@@ -1,7 +1,7 @@
 # Tests comparison operators with tuple arguments.
-clamp10: (if [(lessThan [x, 0]), 0, (if [(greaterThan [x, 10]), 10, x])])
+clamp10: {(lessThan [x, 0]): 0, (greaterThan [x, 10]): 10, _: x}
 is-pos: (greaterThan [x, 0])
 is-neg: (lessThan [x, 0])
 is-zero: (equal [x, 0])
 
-main: (if [(equal [(clamp10 5), 5]), 0, 1])
+main: {(equal [(clamp10 5), 5]): 0, _: 1}

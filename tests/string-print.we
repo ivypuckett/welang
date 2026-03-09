@@ -1,5 +1,3 @@
 # Tests that (print "string") prints the string and returns 0.
 main:
-  (if [(equal [(print "hello, world"), 0]),
-    0,
-    1])
+  {(equal [(print "hello, world"), 0]): 0, _: 1}

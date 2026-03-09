@@ -2,6 +2,4 @@
 # (print n) prints the integer and returns it; (print "s") prints the string and returns 0.
 
 main:
-  (if [(equal [(print 42), 42]),
-    0,
-    1])
+  {(equal [(print 42), 42]): 0, _: 1}
