@@ -1,9 +1,9 @@
 # Tests if/else and the rename binding.
-abs: (if [(< [x, 0]), (- [0, x]), x])
+abs: (if [(lessThan [x, 0]), (subtract [0, x]), x])
 
-positive-only: (if [(> [x, 0]), x])
+positive-only: (if [(greaterThan [x, 0]), x])
 
 # rename x to n for readability
-abs-named: (n: (if [(< [n, 0]), (- [0, n]), n]))
+abs-named: (n: (if [(lessThan [n, 0]), (subtract [0, n]), n]))
 
-main: (if [(= [(abs -7), 7]), 0, 1])
+main: (if [(equal [(abs -7), 7]), 0, 1])

@@ -273,12 +273,12 @@ mod tests {
     #[test]
     fn test_operator_symbols() {
         assert_eq!(
-            tok("+ - * /"),
+            tok("add subtract multiply divide"),
             vec![
-                Token::Symbol("+".to_string()),
-                Token::Symbol("-".to_string()),
-                Token::Symbol("*".to_string()),
-                Token::Symbol("/".to_string()),
+                Token::Symbol("add".to_string()),
+                Token::Symbol("subtract".to_string()),
+                Token::Symbol("multiply".to_string()),
+                Token::Symbol("divide".to_string()),
             ]
         );
     }
@@ -339,12 +339,12 @@ mod tests {
     #[test]
     fn test_func_def_tokens() {
         assert_eq!(
-            tok("double: (* [2, x])"),
+            tok("double: (multiply [2, x])"),
             vec![
                 Token::Symbol("double".to_string()),
                 Token::Colon,
                 Token::LParen,
-                Token::Symbol("*".to_string()),
+                Token::Symbol("multiply".to_string()),
                 Token::LBracket,
                 Token::Number(2.0),
                 Token::Comma,

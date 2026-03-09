@@ -1,10 +1,10 @@
 # Tests that (name: body) rename binding works correctly at runtime,
 # giving the implicit parameter an explicit name inside the body.
-abs-named: (n: (if [(< [n, 0]), (- [0, n]), n]))
+abs-named: (n: (if [(lessThan [n, 0]), (subtract [0, n]), n]))
 
 main:
-  (if [(= [(abs-named -9), 9]),
-    (if [(= [(abs-named 5), 5]),
+  (if [(equal [(abs-named -9), 9]),
+    (if [(equal [(abs-named 5), 5]),
       0,
       1]),
     1])

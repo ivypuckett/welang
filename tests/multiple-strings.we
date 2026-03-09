@@ -1,9 +1,9 @@
 # Tests that multiple string literals in one program each get unique data
 # labels and all return 0 correctly.
 main:
-  (if [(= [(print "foo"), 0]),
-    (if [(= [(print "bar"), 0]),
-      (if [(= [(print "baz"), 0]),
+  (if [(equal [(print "foo"), 0]),
+    (if [(equal [(print "bar"), 0]),
+      (if [(equal [(print "baz"), 0]),
         0,
         1]),
       1]),

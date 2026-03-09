@@ -3,10 +3,10 @@
 bool-result: (if [x, 1, 0])
 
 main:
-  (if [(= [true, 1]),
-    (if [(= [false, 0]),
-      (if [(= [(bool-result true), 1]),
-        (if [(= [(bool-result false), 0]),
+  (if [(equal [true, 1]),
+    (if [(equal [false, 0]),
+      (if [(equal [(bool-result true), 1]),
+        (if [(equal [(bool-result false), 0]),
           0,
           1]),
         1]),
