@@ -1,4 +1,4 @@
-; Tests the four arithmetic operators with tuple arguments.
+# Tests the four arithmetic operators with tuple arguments.
 double: (* [2, x])
 halve: (/ [x, 2])
 inc: (+ [x, 1])

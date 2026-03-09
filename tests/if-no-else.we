@@ -1,5 +1,5 @@
-; Tests that (if [cond, then]) returns 0 when the condition is false
-; (no else branch means the implicit else value is 0).
+# Tests that (if [cond, then]) returns 0 when the condition is false
+# (no else branch means the implicit else value is 0).
 clamp-positive: (if [(> [x, 0]), x])
 
 main:

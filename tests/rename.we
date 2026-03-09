@@ -1,5 +1,5 @@
-; Tests that (name: body) rename binding works correctly at runtime,
-; giving the implicit parameter an explicit name inside the body.
+# Tests that (name: body) rename binding works correctly at runtime,
+# giving the implicit parameter an explicit name inside the body.
 abs-named: (n: (if [(< [n, 0]), (- [0, n]), n]))
 
 main:

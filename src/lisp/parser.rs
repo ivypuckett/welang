@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn test_comment_ignored() {
         assert_eq!(
-            parse("; ignore\nmain: 0").unwrap(),
+            parse("# ignore\nmain: 0").unwrap(),
             vec![Expr::List(vec![
                 Expr::Symbol("define".to_string()),
                 Expr::List(vec![

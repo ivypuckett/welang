@@ -1,5 +1,5 @@
-; Tests that multiple string literals in one program each get unique data
-; labels and all return 0 correctly.
+# Tests that multiple string literals in one program each get unique data
+# labels and all return 0 correctly.
 main:
   (if [(= [(print "foo"), 0]),
     (if [(= [(print "bar"), 0]),

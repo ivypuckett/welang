@@ -62,7 +62,7 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                 line += 1;
             }
 
-            ';' => {
+            '#' => {
                 while let Some(&ch) = chars.peek() {
                     chars.next();
                     if ch == '\n' {
@@ -158,23 +158,6 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                 tokens.push((Token::Str(s), string_line));
             }
 
-            '#' => {
-                chars.next();
-                match chars.peek() {
-                    Some(&'t') => {
-                        chars.next();
-                        tokens.push((Token::Bool(true), line));
-                    }
-                    Some(&'f') => {
-                        chars.next();
-                        tokens.push((Token::Bool(false), line));
-                    }
-                    _ => {
-                        tokens.push((Token::Symbol("#".to_string()), line));
-                    }
-                }
-            }
-
             _ => {
                 let word_line = line;
                 let mut word = String::new();
@@ -186,7 +169,7 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                         || ch == ']'
                         || ch == ','
                         || ch == '"'
-                        || ch == ';'
+                        || ch == '#'
                         || ch == ':'
                         || ch == '|'
                     {
@@ -195,7 +178,11 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                     chars.next();
                     word.push(ch);
                 }
-                if looks_like_number(&word) {
+                if word == "true" {
+                    tokens.push((Token::Bool(true), word_line));
+                } else if word == "false" {
+                    tokens.push((Token::Bool(false), word_line));
+                } else if looks_like_number(&word) {
                     match word.parse::<f64>() {
                         Ok(n) => tokens.push((Token::Number(n), word_line)),
                         Err(_) => {
@@ -286,7 +273,12 @@ mod tests {
 
     #[test]
     fn test_bool_true() {
-        assert_eq!(tok("#t"), vec![Token::Bool(true)]);
+        assert_eq!(tok("true"), vec![Token::Bool(true)]);
+    }
+
+    #[test]
+    fn test_bool_false() {
+        assert_eq!(tok("false"), vec![Token::Bool(false)]);
     }
 
     #[test]
@@ -307,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_line_comment() {
-        assert_eq!(tok("; comment\n42"), vec![Token::Number(42.0)]);
+        assert_eq!(tok("# comment\n42"), vec![Token::Number(42.0)]);
     }
 
     #[test]
