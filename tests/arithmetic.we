@@ -1,7 +1,7 @@
 # Tests the four arithmetic operators with tuple arguments.
-double: (* [2, x])
-halve: (/ [x, 2])
-inc: (+ [x, 1])
-dec: (- [x, 1])
+double: (mul [2, x])
+halve: (div [x, 2])
+inc: (add [x, 1])
+dec: (sub [x, 1])
 
-main: (if [(= [(double 5), 10]), 0, 1])
+main: (if [(eq [(double 5), 10]), 0, 1])

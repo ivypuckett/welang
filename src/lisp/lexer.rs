@@ -261,12 +261,12 @@ mod tests {
     #[test]
     fn test_operator_symbols() {
         assert_eq!(
-            tok("+ - * /"),
+            tok("add sub mul div"),
             vec![
-                Token::Symbol("+".to_string()),
-                Token::Symbol("-".to_string()),
-                Token::Symbol("*".to_string()),
-                Token::Symbol("/".to_string()),
+                Token::Symbol("add".to_string()),
+                Token::Symbol("sub".to_string()),
+                Token::Symbol("mul".to_string()),
+                Token::Symbol("div".to_string()),
             ]
         );
     }
@@ -327,12 +327,12 @@ mod tests {
     #[test]
     fn test_func_def_tokens() {
         assert_eq!(
-            tok("double: (* [2, x])"),
+            tok("double: (mul [2, x])"),
             vec![
                 Token::Symbol("double".to_string()),
                 Token::Colon,
                 Token::LParen,
-                Token::Symbol("*".to_string()),
+                Token::Symbol("mul".to_string()),
                 Token::LBracket,
                 Token::Number(2.0),
                 Token::Comma,
