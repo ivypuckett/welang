@@ -12,6 +12,8 @@ pub enum Expr {
     List(Vec<Expr>),
     /// A tuple literal: `[e1, e2, ...]`.
     Tuple(Vec<Expr>),
+    /// A map literal: `{k1: v1, k2: v2, ...}`.
+    Map(Vec<(String, Expr)>),
     /// A rename-binding expression: `(y: body)` — binds `y = x` in `body`.
     Rename(String, Box<Expr>),
 }
@@ -33,6 +35,12 @@ pub enum ParseErrorKind {
     UnexpectedPipe,
     /// A pipe segment was empty (e.g. `(| f)` or `(f |)`).
     EmptyPipeSegment,
+    /// A `{` map literal was not closed.
+    UnmatchedOpenBrace,
+    /// A `}` appeared outside of a map literal.
+    UnexpectedCloseBrace,
+    /// A map entry was malformed (expected `key: value`).
+    InvalidMapEntry,
 }
 
 impl std::fmt::Display for ParseErrorKind {
@@ -59,6 +67,11 @@ impl std::fmt::Display for ParseErrorKind {
                     f,
                     "empty pipe segment: '|' requires an expression on each side"
                 )
+            }
+            ParseErrorKind::UnmatchedOpenBrace => write!(f, "unmatched '{{'"),
+            ParseErrorKind::UnexpectedCloseBrace => write!(f, "unexpected '}}'"),
+            ParseErrorKind::InvalidMapEntry => {
+                write!(f, "invalid map entry: expected 'key: value'")
             }
         }
     }
@@ -277,12 +290,58 @@ fn parse_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseE
             Ok(Expr::Tuple(items))
         }
 
+        Token::LBrace => {
+            *pos += 1;
+            let mut entries: Vec<(String, Expr)> = Vec::new();
+            loop {
+                if *pos >= tokens.len() {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenBrace,
+                        line: tok_line,
+                    });
+                }
+                if tokens[*pos].0 == Token::RBrace {
+                    *pos += 1;
+                    break;
+                }
+                // Expect: Symbol Colon Expr
+                let key = match &tokens[*pos].0 {
+                    Token::Symbol(s) => s.clone(),
+                    _ => {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidMapEntry,
+                            line: tokens[*pos].1,
+                        });
+                    }
+                };
+                *pos += 1; // consume key
+                if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::InvalidMapEntry,
+                        line: line_at(tokens, *pos),
+                    });
+                }
+                *pos += 1; // consume colon
+                let val = parse_expr(tokens, pos)?;
+                entries.push((key, val));
+                // Skip optional comma separator.
+                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
+                    *pos += 1;
+                }
+            }
+            Ok(Expr::Map(entries))
+        }
+
         Token::RParen => Err(ParseError {
             kind: ParseErrorKind::UnexpectedCloseParen,
             line: tok_line,
         }),
         Token::RBracket => Err(ParseError {
             kind: ParseErrorKind::UnexpectedCloseBracket,
+            line: tok_line,
+        }),
+        Token::RBrace => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedCloseBrace,
             line: tok_line,
         }),
         Token::Comma => Err(ParseError {

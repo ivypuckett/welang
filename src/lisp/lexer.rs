@@ -5,6 +5,8 @@ pub enum Token {
     RParen,
     LBracket,
     RBracket,
+    LBrace,
+    RBrace,
     Comma,
     Colon,
     Pipe,
@@ -88,6 +90,14 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                 chars.next();
                 tokens.push((Token::RBracket, line));
             }
+            '{' => {
+                chars.next();
+                tokens.push((Token::LBrace, line));
+            }
+            '}' => {
+                chars.next();
+                tokens.push((Token::RBrace, line));
+            }
             ',' => {
                 chars.next();
                 tokens.push((Token::Comma, line));
@@ -167,6 +177,8 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                         || ch == ')'
                         || ch == '['
                         || ch == ']'
+                        || ch == '{'
+                        || ch == '}'
                         || ch == ','
                         || ch == '"'
                         || ch == '#'
