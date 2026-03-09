@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -27,6 +27,10 @@ struct Builtins {
     printf_id: FuncId,
     /// `puts(const char*) -> i32` — used by `(print "s")` for string literals.
     puts_id: FuncId,
+    /// `malloc(size: i64) -> i64` — used by map literals to allocate storage.
+    malloc_id: FuncId,
+    /// `strcmp(s1: i64, s2: i64) -> i32` — used by `(get ...)` for key lookup.
+    strcmp_id: FuncId,
     /// `"%ld\n"` format string for integer printing.
     fmt_int_id: DataId,
     /// Counter for generating unique names for string-literal data objects.
@@ -119,6 +123,27 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             .map_err(|e| e.to_string())?
     };
 
+    // Declare malloc(size: i64) -> i64 for map heap allocation.
+    let malloc_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // byte count
+        sig.returns.push(AbiParam::new(types::I64)); // pointer
+        module
+            .declare_function("malloc", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Declare strcmp(s1: i64, s2: i64) -> i32 for map key lookup.
+    let strcmp_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // s1 pointer
+        sig.params.push(AbiParam::new(types::I64)); // s2 pointer
+        sig.returns.push(AbiParam::new(types::I32)); // comparison result
+        module
+            .declare_function("strcmp", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?
+    };
+
     // Define the "%ld\n" format string used by (print n).
     let fmt_int_id = {
         let mut desc = DataDescription::new();
@@ -133,6 +158,8 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
     let builtins = Builtins {
         printf_id,
         puts_id,
+        malloc_id,
+        strcmp_id,
         fmt_int_id,
         next_str_id: Cell::new(0),
     };
@@ -307,6 +334,10 @@ fn compile_expr(
             "tuple literal [...] can only appear as an argument to a built-in operator".to_string(),
         ),
 
+        Expr::Map(entries) => compile_map(
+            builder, module, registry, entries, locals, next_var, builtins,
+        ),
+
         Expr::List(items) if items.is_empty() => {
             Err("empty list () is not a valid expression".to_string())
         }
@@ -339,6 +370,15 @@ fn compile_expr(
                 builtins,
             ),
             Expr::Symbol(kw) if kw == "print" => compile_print(
+                builder,
+                module,
+                registry,
+                &items[1..],
+                locals,
+                next_var,
+                builtins,
+            ),
+            Expr::Symbol(kw) if kw == "get" => compile_get(
                 builder,
                 module,
                 registry,
@@ -603,4 +643,221 @@ fn compile_call(
         Some(r) if info.is_main => Ok(builder.ins().sextend(types::I64, r)),
         Some(r) => Ok(r),
     }
+}
+
+/// Helper: intern a string in the object file's data section and return a
+/// global-value pointer to it.  The returned `Value` is an `i64` pointer.
+fn intern_string(
+    module: &mut ObjectModule,
+    builder: &mut FunctionBuilder,
+    builtins: &Builtins,
+    s: &str,
+    prefix: &str,
+) -> Result<Value, CompileError> {
+    let label = format!("{}{}", prefix, builtins.next_str_id.get());
+    builtins.next_str_id.set(builtins.next_str_id.get() + 1);
+    let mut desc = DataDescription::new();
+    let mut bytes = s.as_bytes().to_vec();
+    bytes.push(b'\0');
+    desc.define(bytes.into_boxed_slice());
+    let data_id = module
+        .declare_data(&label, Linkage::Local, false, false)
+        .map_err(|e| e.to_string())?;
+    module
+        .define_data(data_id, &desc)
+        .map_err(|e| e.to_string())?;
+    let gv = module.declare_data_in_func(data_id, builder.func);
+    Ok(builder.ins().global_value(types::I64, gv))
+}
+
+/// Compile a map literal `{k1: v1, k2: v2, ...}`.
+///
+/// Layout of the heap block (all fields are i64, 8 bytes each):
+///   [0]          n_fields
+///   [1 + 2*i]    pointer to null-terminated key string for field i
+///   [2 + 2*i]    value for field i
+///
+/// String values are stored as pointers into the data section.
+/// All other values are compiled to i64.
+/// Returns an i64 pointer to the allocated block.
+#[allow(clippy::too_many_arguments)]
+fn compile_map(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    registry: &HashMap<String, FuncInfo>,
+    entries: &[(String, Expr)],
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+    builtins: &Builtins,
+) -> Result<Value, CompileError> {
+    let n = entries.len();
+    let size = i64::try_from((1 + 2 * n) * 8).map_err(|_| "map literal has too many entries")?;
+
+    // Allocate heap storage via malloc.
+    let size_val = builder.ins().iconst(types::I64, size);
+    let malloc_ref = module.declare_func_in_func(builtins.malloc_id, builder.func);
+    let malloc_call = builder.ins().call(malloc_ref, &[size_val]);
+    let map_ptr = builder.inst_results(malloc_call)[0];
+
+    // Store n_fields at offset 0.
+    let n_val = builder.ins().iconst(
+        types::I64,
+        i64::try_from(n).map_err(|_| "map literal has too many entries")?,
+    );
+    builder.ins().store(MemFlags::new(), n_val, map_ptr, 0);
+
+    for (i, (key, val_expr)) in entries.iter().enumerate() {
+        // Store key string pointer.
+        let key_ptr = intern_string(module, builder, builtins, key, "__we_mk_")?;
+        let key_off =
+            i32::try_from((1 + 2 * i) * 8).map_err(|_| "map literal has too many entries")?;
+        builder
+            .ins()
+            .store(MemFlags::new(), key_ptr, map_ptr, key_off);
+
+        // Compile value — string literals become data-section pointers.
+        let val = if let Expr::Str(s) = val_expr {
+            intern_string(module, builder, builtins, s, "__we_str_")?
+        } else {
+            compile_expr(
+                builder, module, registry, val_expr, locals, next_var, builtins,
+            )?
+        };
+        let val_off =
+            i32::try_from((2 + 2 * i) * 8).map_err(|_| "map literal has too many entries")?;
+        builder.ins().store(MemFlags::new(), val, map_ptr, val_off);
+    }
+
+    Ok(map_ptr)
+}
+
+/// Compile `(get [map, key])`.
+///
+/// `map` is any expression that evaluates to a map pointer.
+/// `key` is a symbol or string literal naming the field to retrieve.
+///
+/// Performs a runtime linear scan of the map's key list using `strcmp`.
+/// Returns the matching value, or `0` if the key is not found.
+#[allow(clippy::too_many_arguments)]
+fn compile_get(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    registry: &HashMap<String, FuncInfo>,
+    args: &[Expr],
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+    builtins: &Builtins,
+) -> Result<Value, CompileError> {
+    let (map_expr, key_expr) = match args {
+        [Expr::Tuple(elems)] if elems.len() == 2 => (&elems[0], &elems[1]),
+        _ => return Err("'get' requires a 2-element tuple argument [map, key]".to_string()),
+    };
+
+    let key_name: String = match key_expr {
+        Expr::Symbol(s) => s.clone(),
+        Expr::Str(s) => s.clone(),
+        _ => return Err("map key must be a symbol or string literal".to_string()),
+    };
+
+    // Compile the map pointer and intern the target key string.
+    let map_ptr = compile_expr(
+        builder, module, registry, map_expr, locals, next_var, builtins,
+    )?;
+    let target_key = intern_string(module, builder, builtins, &key_name, "__we_getkey_")?;
+
+    // Load the number of fields from the map header.
+    let n_fields = builder.ins().load(types::I64, MemFlags::new(), map_ptr, 0);
+
+    // ── block layout ──────────────────────────────────────────────────────────
+    // loop_header(i: i64) — entry point; checks i < n_fields
+    // loop_body            — loads stored key and calls strcmp
+    // loop_found           — loads matching value, jumps to merge
+    // loop_continue        — increments i, jumps back to loop_header
+    // loop_exit            — n_fields reached, key not found
+    // merge(result: i64)   — join point
+    let loop_header = builder.create_block();
+    let loop_body = builder.create_block();
+    let loop_found = builder.create_block();
+    let loop_continue = builder.create_block();
+    let loop_exit = builder.create_block();
+    let merge_block = builder.create_block();
+
+    builder.append_block_param(loop_header, types::I64); // loop variable i
+    builder.append_block_param(merge_block, types::I64); // result
+
+    // Jump into the loop with i = 0.
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(loop_header, &[zero]);
+
+    // loop_header: exit if i >= n_fields.
+    builder.switch_to_block(loop_header);
+    // (sealed later, after the back-edge from loop_continue is established)
+    let i = builder.block_params(loop_header)[0];
+    let done = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, i, n_fields);
+    builder.ins().brif(done, loop_exit, &[], loop_body, &[]);
+
+    // loop_body: load the stored key pointer and strcmp it.
+    builder.switch_to_block(loop_body);
+    builder.seal_block(loop_body);
+    {
+        let two = builder.ins().iconst(types::I64, 2);
+        let eight = builder.ins().iconst(types::I64, 8);
+        let one = builder.ins().iconst(types::I64, 1);
+        let i2 = builder.ins().imul(i, two);
+        let idx = builder.ins().iadd(one, i2); // 1 + 2*i
+        let key_byte_off = builder.ins().imul(idx, eight); // (1 + 2*i) * 8
+        let key_field_addr = builder.ins().iadd(map_ptr, key_byte_off);
+        let stored_key = builder
+            .ins()
+            .load(types::I64, MemFlags::new(), key_field_addr, 0);
+
+        let strcmp_ref = module.declare_func_in_func(builtins.strcmp_id, builder.func);
+        let cmp_call = builder.ins().call(strcmp_ref, &[stored_key, target_key]);
+        let cmp_i32 = builder.inst_results(cmp_call)[0];
+        let matched = builder.ins().icmp_imm(IntCC::Equal, cmp_i32, 0);
+        builder
+            .ins()
+            .brif(matched, loop_found, &[], loop_continue, &[]);
+    }
+
+    // loop_found: recompute value address (using i from loop_header, which
+    // dominates this block) and jump to merge.
+    builder.switch_to_block(loop_found);
+    builder.seal_block(loop_found);
+    {
+        let two = builder.ins().iconst(types::I64, 2);
+        let eight = builder.ins().iconst(types::I64, 8);
+        let two_i = builder.ins().imul(i, two); // 2 * i
+        let idx = builder.ins().iadd(two_i, two); // 2 + 2*i  (= val slot index)
+        let val_byte_off = builder.ins().imul(idx, eight);
+        let val_addr = builder.ins().iadd(map_ptr, val_byte_off);
+        let val = builder.ins().load(types::I64, MemFlags::new(), val_addr, 0);
+        builder.ins().jump(merge_block, &[val]);
+    }
+
+    // loop_continue: advance i and loop back.
+    builder.switch_to_block(loop_continue);
+    builder.seal_block(loop_continue);
+    {
+        let one = builder.ins().iconst(types::I64, 1);
+        let next_i = builder.ins().iadd(i, one);
+        builder.ins().jump(loop_header, &[next_i]);
+    }
+    // All predecessors of loop_header are now known.
+    builder.seal_block(loop_header);
+
+    // loop_exit: key not found — return 0.
+    builder.switch_to_block(loop_exit);
+    builder.seal_block(loop_exit);
+    {
+        let zero2 = builder.ins().iconst(types::I64, 0);
+        builder.ins().jump(merge_block, &[zero2]);
+    }
+
+    // merge: collect the result.
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
 }
