@@ -1,0 +1,16 @@
+# Tests that 3f14-style float literals are accepted by the lexer.
+# The runtime uses i64, so fractional parts are truncated at compile time:
+#   3f14 -> 3, 1f9 -> 1, 2f0 -> 2, -0f5 -> 0.
+#
+# This test verifies two things:
+#   1. The 3f14 syntax parses without error (compile-time check).
+#   2. The truncated integer values behave correctly at runtime.
+
+main:
+  {(equal [3f0, 3]):
+    {(equal [(multiply [3f0, 2f0]), 6]):
+      {(equal [1f9, 1]):
+        {(equal [3f14, 3]): 0, _: 1},
+      _: 1},
+    _: 1},
+  _: 1}
