@@ -29,8 +29,6 @@ struct Builtins {
     puts_id: FuncId,
     /// `malloc(size: i64) -> i64` — used by map literals to allocate storage.
     malloc_id: FuncId,
-    /// `strcmp(s1: i64, s2: i64) -> i32` — used by `(get ...)` for key lookup.
-    strcmp_id: FuncId,
     /// `"%ld\n"` format string for integer printing.
     fmt_int_id: DataId,
     /// Counter for generating unique names for string-literal data objects.
@@ -132,17 +130,6 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             .map_err(|e| e.to_string())?
     };
 
-    // Declare strcmp(s1: i64, s2: i64) -> i32 for map key lookup.
-    let strcmp_id = {
-        let mut sig = module.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // s1 pointer
-        sig.params.push(AbiParam::new(types::I64)); // s2 pointer
-        sig.returns.push(AbiParam::new(types::I32)); // comparison result
-        module
-            .declare_function("strcmp", Linkage::Import, &sig)
-            .map_err(|e| e.to_string())?
-    };
-
     // Define the "%ld\n" format string used by (print n).
     let fmt_int_id = {
         let mut desc = DataDescription::new();
@@ -158,7 +145,6 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
         printf_id,
         puts_id,
         malloc_id,
-        strcmp_id,
         fmt_int_id,
         next_str_id: Cell::new(0),
     };
@@ -715,11 +701,12 @@ fn compile_map(
 
 /// Compile `(get [map, key])`.
 ///
-/// `map` is any expression that evaluates to a map pointer.
-/// `key` is a symbol or string literal naming the field to retrieve.
+/// `map` must be a map literal whose keys are known at compile time.
+/// `key` must be a symbol or string literal naming an existing field.
 ///
-/// Performs a runtime linear scan of the map's key list using `strcmp`.
-/// Returns the matching value, or `0` if the key is not found.
+/// The key's position in the literal is resolved at compile time, and a
+/// single direct load is emitted at the statically-known offset — no runtime
+/// scan or `strcmp` needed.
 #[allow(clippy::too_many_arguments)]
 fn compile_get(
     builder: &mut FunctionBuilder,
@@ -738,108 +725,86 @@ fn compile_get(
     let key_name: String = match key_expr {
         Expr::Symbol(s) => s.clone(),
         Expr::Str(s) => s.clone(),
-        _ => return Err("map key must be a symbol or string literal".to_string()),
+        _ => return Err("'get' key must be a symbol or string literal".to_string()),
     };
 
-    // Compile the map pointer and intern the target key string.
+    // Resolve the map's keys at compile time — only map literals are accepted.
+    let keys: Vec<&str> =
+        match map_expr {
+            Expr::Map(entries) => entries.iter().map(|(k, _)| k.as_str()).collect(),
+            _ => return Err(
+                "'get' map argument must be a map literal so its keys are known at compile time"
+                    .to_string(),
+            ),
+        };
+
+    // Validate that the requested key exists.
+    let key_index = keys.iter().position(|&k| k == key_name).ok_or_else(|| {
+        let available = if keys.is_empty() {
+            "(none — map is empty)".to_string()
+        } else {
+            keys.join(", ")
+        };
+        format!(
+            "'get' key '{}' not found in map; available keys: {}",
+            key_name, available
+        )
+    })?;
+
+    // Compile the map pointer.
     let map_ptr = compile_expr(
         builder, module, registry, map_expr, locals, next_var, builtins,
     )?;
-    let target_key = intern_string(module, builder, builtins, &key_name, "__we_getkey_")?;
 
-    // Load the number of fields from the map header.
-    let n_fields = builder.ins().load(types::I64, MemFlags::new(), map_ptr, 0);
-
-    // ── block layout ──────────────────────────────────────────────────────────
-    // loop_header(i: i64) — entry point; checks i < n_fields
-    // loop_body            — loads stored key and calls strcmp
-    // loop_found           — loads matching value, jumps to merge
-    // loop_continue        — increments i, jumps back to loop_header
-    // loop_exit            — n_fields reached, key not found
-    // merge(result: i64)   — join point
-    let loop_header = builder.create_block();
-    let loop_body = builder.create_block();
-    let loop_found = builder.create_block();
-    let loop_continue = builder.create_block();
-    let loop_exit = builder.create_block();
-    let merge_block = builder.create_block();
-
-    builder.append_block_param(loop_header, types::I64); // loop variable i
-    builder.append_block_param(merge_block, types::I64); // result
-
-    // Jump into the loop with i = 0.
-    let zero = builder.ins().iconst(types::I64, 0);
-    builder.ins().jump(loop_header, &[zero]);
-
-    // loop_header: exit if i >= n_fields.
-    builder.switch_to_block(loop_header);
-    // (sealed later, after the back-edge from loop_continue is established)
-    let i = builder.block_params(loop_header)[0];
-    let done = builder
+    // Emit a direct load at the statically-known value offset: (2 + 2*index) * 8.
+    // Map layout: [n_fields, key0, val0, key1, val1, ...]  (each slot is 8 bytes)
+    let val_offset =
+        i32::try_from((2 + 2 * key_index) * 8).map_err(|_| "'get': key index overflow")?;
+    Ok(builder
         .ins()
-        .icmp(IntCC::SignedGreaterThanOrEqual, i, n_fields);
-    builder.ins().brif(done, loop_exit, &[], loop_body, &[]);
+        .load(types::I64, MemFlags::new(), map_ptr, val_offset))
+}
 
-    // loop_body: load the stored key pointer and strcmp it.
-    builder.switch_to_block(loop_body);
-    builder.seal_block(loop_body);
-    {
-        let two = builder.ins().iconst(types::I64, 2);
-        let eight = builder.ins().iconst(types::I64, 8);
-        let one = builder.ins().iconst(types::I64, 1);
-        let i2 = builder.ins().imul(i, two);
-        let idx = builder.ins().iadd(one, i2); // 1 + 2*i
-        let key_byte_off = builder.ins().imul(idx, eight); // (1 + 2*i) * 8
-        let key_field_addr = builder.ins().iadd(map_ptr, key_byte_off);
-        let stored_key = builder
-            .ins()
-            .load(types::I64, MemFlags::new(), key_field_addr, 0);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::parser::parse;
 
-        let strcmp_ref = module.declare_func_in_func(builtins.strcmp_id, builder.func);
-        let cmp_call = builder.ins().call(strcmp_ref, &[stored_key, target_key]);
-        let cmp_i32 = builder.inst_results(cmp_call)[0];
-        let matched = builder.ins().icmp_imm(IntCC::Equal, cmp_i32, 0);
-        builder
-            .ins()
-            .brif(matched, loop_found, &[], loop_continue, &[]);
+    fn compile_src(src: &str) -> Result<Vec<u8>, CompileError> {
+        let exprs = parse(src).map_err(|e| format!("{:?}", e))?;
+        compile(&exprs)
     }
 
-    // loop_found: recompute value address (using i from loop_header, which
-    // dominates this block) and jump to merge.
-    builder.switch_to_block(loop_found);
-    builder.seal_block(loop_found);
-    {
-        let two = builder.ins().iconst(types::I64, 2);
-        let eight = builder.ins().iconst(types::I64, 8);
-        let two_i = builder.ins().imul(i, two); // 2 * i
-        let idx = builder.ins().iadd(two_i, two); // 2 + 2*i  (= val slot index)
-        let val_byte_off = builder.ins().imul(idx, eight);
-        let val_addr = builder.ins().iadd(map_ptr, val_byte_off);
-        let val = builder.ins().load(types::I64, MemFlags::new(), val_addr, 0);
-        builder.ins().jump(merge_block, &[val]);
+    #[test]
+    fn test_get_missing_key_is_compile_error() {
+        let err = compile_src("main: (get [{x: 1, y: 2}, z])").unwrap_err();
+        assert!(
+            err.contains("'get' key 'z' not found in map"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("x, y"),
+            "error should list available keys; got: {err}"
+        );
     }
 
-    // loop_continue: advance i and loop back.
-    builder.switch_to_block(loop_continue);
-    builder.seal_block(loop_continue);
-    {
-        let one = builder.ins().iconst(types::I64, 1);
-        let next_i = builder.ins().iadd(i, one);
-        builder.ins().jump(loop_header, &[next_i]);
-    }
-    // All predecessors of loop_header are now known.
-    builder.seal_block(loop_header);
-
-    // loop_exit: key not found — return 0.
-    builder.switch_to_block(loop_exit);
-    builder.seal_block(loop_exit);
-    {
-        let zero2 = builder.ins().iconst(types::I64, 0);
-        builder.ins().jump(merge_block, &[zero2]);
+    #[test]
+    fn test_get_non_literal_map_is_compile_error() {
+        // The map argument is a local variable — shape is unknown at compile time.
+        let err = compile_src("f: (get [x, key])").unwrap_err();
+        assert!(err.contains("map literal"), "unexpected error: {err}");
     }
 
-    // merge: collect the result.
-    builder.switch_to_block(merge_block);
-    builder.seal_block(merge_block);
-    Ok(builder.block_params(merge_block)[0])
+    #[test]
+    fn test_get_empty_map_is_compile_error() {
+        let err = compile_src("main: (get [{}, z])").unwrap_err();
+        assert!(
+            err.contains("'get' key 'z' not found in map"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("none — map is empty"),
+            "error should note the map is empty; got: {err}"
+        );
+    }
 }
