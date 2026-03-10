@@ -195,7 +195,8 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                 } else if word == "false" {
                     tokens.push((Token::Bool(false), word_line));
                 } else if looks_like_number(&word) {
-                    match word.parse::<f64>() {
+                    let normalized = word.replacen('f', ".", 1);
+                    match normalized.parse::<f64>() {
                         Ok(n) => tokens.push((Token::Number(n), word_line)),
                         Err(_) => {
                             return Err(LexError {
@@ -223,9 +224,7 @@ fn looks_like_number(word: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    s.chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit() || c == '.')
+    s.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -353,6 +352,16 @@ mod tests {
                 Token::RParen,
             ]
         );
+    }
+
+    #[test]
+    fn test_decimal_number() {
+        assert_eq!(tok("3f14"), vec![Token::Number(3.14)]);
+    }
+
+    #[test]
+    fn test_negative_decimal_number() {
+        assert_eq!(tok("-1f5"), vec![Token::Number(-1.5)]);
     }
 
     #[test]
