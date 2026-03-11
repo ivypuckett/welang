@@ -3,6 +3,6 @@
 abs-named: (n: {(lessThan [n, 0]): (subtract [0, n]), _: n})
 
 main:
-  {(equal [(abs-named -9), 9]):
-    {(equal [(abs-named 5), 5]): 0, _: 1},
+  {((abs-named -9).equals 9):
+    {((abs-named 5).equals 5): 0, _: 1},
   _: 1}

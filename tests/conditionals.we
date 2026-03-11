@@ -6,4 +6,4 @@ positive-only: {(greaterThan [x, 0]): x, _: 0}
 # rename x to n for readability
 abs-named: (n: {(lessThan [n, 0]): (subtract [0, n]), _: n})
 
-main: {(equal [(abs -7), 7]): 0, _: 1}
+main: {((abs -7).equals 7): 0, _: 1}

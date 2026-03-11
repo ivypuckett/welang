@@ -2,4 +2,4 @@
 # (print n) prints the integer and returns it; (print "s") prints the string and returns 0.
 
 main:
-  {(equal [(print 42), 42]): 0, _: 1}
+  {((print 42).equals 42): 0, _: 1}

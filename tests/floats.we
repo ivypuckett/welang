@@ -7,10 +7,10 @@
 #   2. The truncated integer values behave correctly at runtime.
 
 main:
-  {(equal [3f0, 3]):
-    {(equal [(multiply [3f0, 2f0]), 6]):
-      {(equal [1f9, 1]):
-        {(equal [3f14, 3]): 0, _: 1},
+  {(3f0.equals 3):
+    {((multiply [3f0, 2f0]).equals 6):
+      {(1f9.equals 1):
+        {(3f14.equals 3): 0, _: 1},
       _: 1},
     _: 1},
   _: 1}

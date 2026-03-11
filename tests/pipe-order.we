@@ -32,4 +32,4 @@ n10: (add [(multiply [2, x]), 10])
 # Mirrors the pattern (3 2 1 x | 5 4 | 6 | 10 9 8 7) from the spec.
 pipeline: (n3 n2 n1 x | n5 n4 | n6 | n10 n9 n8 n7)
 
-main: {(equal [(pipeline 0), 2036]): 0, _: 1}
+main: {((pipeline 0).equals 2036): 0, _: 1}

@@ -3,10 +3,10 @@
 bool-result: {(x): 1, _: 0}
 
 main:
-  {(equal [true, 1]):
-    {(equal [false, 0]):
-      {(equal [(bool-result true), 1]):
-        {(equal [(bool-result false), 0]): 0, _: 1},
+  {(true.equals 1):
+    {(false.equals 0):
+      {((bool-result true).equals 1):
+        {((bool-result false).equals 0): 0, _: 1},
       _: 1},
     _: 1},
   _: 1}

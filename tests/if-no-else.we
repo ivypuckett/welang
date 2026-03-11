@@ -2,6 +2,6 @@
 clamp-positive: {(greaterThan [x, 0]): x, _: 0}
 
 main:
-  {(equal [(clamp-positive -5), 0]):
-    {(equal [(clamp-positive 3), 3]): 0, _: 1},
+  {((clamp-positive -5).equals 0):
+    {((clamp-positive 3).equals 3): 0, _: 1},
   _: 1}

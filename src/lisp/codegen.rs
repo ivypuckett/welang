@@ -87,7 +87,7 @@ fn make_sig(
 ///   number / bool literals
 ///   `x`                         — the implicit input parameter
 ///   `(op [a, b])`               — arithmetic: `add  subtract  multiply  divide`
-///   `(op [a, b])`               — comparison: `equal  lessThan  greaterThan  lessThanOrEqual  greaterThanOrEqual`  (returns 0 or 1)
+///   `(op [a, b])`               — comparison: `equals  lessThan  greaterThan  lessThanOrEqual  greaterThanOrEqual`  (returns 0 or 1)
 ///   `{(c1): v1, ..., _: v}`    — conditional: first truthy arm wins
 ///   `(name: body)`              — rename `x` to `name` in `body`
 ///   `(print x)`                 — print integer x as "%ld\n", returns x
@@ -348,18 +348,16 @@ fn compile_expr(
             Expr::Symbol(op)
                 if matches!(
                     op.as_str(),
-                    "equal"
-                        | "equals"
+                    "equals"
                         | "lessThan"
                         | "greaterThan"
                         | "lessThanOrEqual"
                         | "greaterThanOrEqual"
                 ) =>
             {
-                let canonical = if op == "equals" { "equal" } else { op.as_str() };
-                let (lhs, rhs) = unpack_binary_tuple(canonical, &items[1..])?;
+                let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
                 compile_cmp(
-                    builder, module, registry, canonical, lhs, rhs, locals, next_var, builtins,
+                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
                 )
             }
             Expr::Symbol(kw) if kw == "print" => compile_print(
@@ -453,7 +451,7 @@ fn compile_cmp(
     let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
     let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
     let cc = match op {
-        "equal" => IntCC::Equal,
+        "equals" => IntCC::Equal,
         "lessThan" => IntCC::SignedLessThan,
         "greaterThan" => IntCC::SignedGreaterThan,
         "lessThanOrEqual" => IntCC::SignedLessThanOrEqual,

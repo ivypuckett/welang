@@ -4,4 +4,4 @@ halve: (divide [x, 2])
 inc: (add [x, 1])
 dec: (subtract [x, 1])
 
-main: {(equal [(double 5), 10]): 0, _: 1}
+main: {((double 5).equals 10): 0, _: 1}

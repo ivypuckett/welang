@@ -9,4 +9,4 @@ fib:
     x,
   _: (add [(fib (subtract [x, 1])), (fib (subtract [x, 2]))])}
 
-main: {(equal [(factorial 5), 120]): 0, _: 1}
+main: {((factorial 5).equals 120): 0, _: 1}

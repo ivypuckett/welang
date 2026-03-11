@@ -2,6 +2,6 @@
 clamp10: {(lessThan [x, 0]): 0, (greaterThan [x, 10]): 10, _: x}
 is-pos: (greaterThan [x, 0])
 is-neg: (lessThan [x, 0])
-is-zero: (equal [x, 0])
+is-zero: (x.equals 0)
 
-main: {(equal [(clamp10 5), 5]): 0, _: 1}
+main: {((clamp10 5).equals 5): 0, _: 1}
