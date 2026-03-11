@@ -295,6 +295,10 @@ fn compile_expr(
         }
 
         // `(name: body)` — rename `x` to `name` in scope of `body`.
+        //
+        // We clone `locals` so that the new binding is visible inside `body`
+        // but does NOT leak out to sibling expressions compiled afterward
+        // (e.g. subsequent map-literal values or later conditional arms).
         Expr::Rename(name, body) => {
             let x_val = locals
                 .get("x")
@@ -310,8 +314,17 @@ fn compile_expr(
             *next_var += 1;
             builder.declare_var(new_var, types::I64);
             builder.def_var(new_var, x_val);
-            locals.insert(name.clone(), new_var);
-            compile_expr(builder, module, registry, body, locals, next_var, builtins)
+            let mut inner_locals = locals.clone();
+            inner_locals.insert(name.clone(), new_var);
+            compile_expr(
+                builder,
+                module,
+                registry,
+                body,
+                &mut inner_locals,
+                next_var,
+                builtins,
+            )
         }
 
         // Tuple at expression level is only valid as an argument to an operator.
@@ -780,6 +793,46 @@ mod tests {
         let exprs = parse(src).map_err(|e| format!("{:?}", e))?;
         compile(&exprs)
     }
+
+    // ---- rename scope isolation --------------------------------------------------
+
+    #[test]
+    fn test_rename_does_not_leak_into_map_sibling() {
+        // Before the fix, `n` introduced by `(n: x)` in the first map entry
+        // would persist in `locals` and silently resolve in `b: n`.
+        // After the fix, `n` is scoped to its body only, so `n` in `b: n`
+        // must produce an "undefined variable" compile error.
+        let err = compile_src("f: {a: (n: x), b: n}").unwrap_err();
+        assert!(
+            err.contains("undefined variable: n"),
+            "expected scope-isolation error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rename_does_not_leak_into_cond_sibling() {
+        // Before the fix, `n` introduced in the first conditional arm would
+        // persist in `locals` and silently resolve in the wildcard arm.
+        // After the fix, `n` is scoped to its arm only, so `n` in `_: n`
+        // must produce an "undefined variable" compile error.
+        let err = compile_src("f: {(equal [x, 0]): (n: 0), _: n}").unwrap_err();
+        assert!(
+            err.contains("undefined variable: n"),
+            "expected scope-isolation error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rename_body_can_still_use_renamed_var() {
+        // Sanity-check that the fix doesn't break the intended use: `n` must
+        // still be visible *inside* the rename body.
+        assert!(
+            compile_src("f: (n: (add [n, 1]))").is_ok(),
+            "rename body should be able to reference the renamed variable"
+        );
+    }
+
+    // ---- get compile errors --------------------------------------------------
 
     #[test]
     fn test_get_missing_key_is_compile_error() {
