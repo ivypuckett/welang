@@ -1,7 +1,7 @@
 # Tests comparison operators with dot notation.
 clamp10: {(x.lessThan 0): 0, (x.greaterThan 10): 10, _: x}
-is-pos: x.greaterThan 0
-is-neg: x.lessThan 0
-is-zero: x.equals 0
+is-pos: (x.greaterThan 0)
+is-neg: (x.lessThan 0)
+is-zero: (x.equals 0)
 
 main: {((clamp10 5).equals 5): 0, _: 1}

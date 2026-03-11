@@ -2,11 +2,11 @@
 factorial:
   {(x.lessThanOrEqual 1):
     1,
-  _: x.multiply (factorial (x.subtract 1))}
+  _: (x.multiply (factorial (x.subtract 1)))}
 
 fib:
   {(x.lessThan 2):
     x,
-  _: (fib (x.subtract 1)).add (fib (x.subtract 2))}
+  _: ((fib (x.subtract 1)).add (fib (x.subtract 2)))}
 
 main: {((factorial 5).equals 120): 0, _: 1}

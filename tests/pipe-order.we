@@ -17,16 +17,16 @@
 # Any other execution order produces a different value, so main
 # returns 0 (success) only when the pipeline ran steps 1-10 in order.
 
-n1: x.multiply 2 .add 1
-n2: x.multiply 2 .add 2
-n3: x.multiply 2 .add 3
-n4: x.multiply 2 .add 4
-n5: x.multiply 2 .add 5
-n6: x.multiply 2 .add 6
-n7: x.multiply 2 .add 7
-n8: x.multiply 2 .add 8
-n9: x.multiply 2 .add 9
-n10: x.multiply 2 .add 10
+n1: (2.multiply x .add 1)
+n2: (2.multiply x .add 2)
+n3: (2.multiply x .add 3)
+n4: (2.multiply x .add 4)
+n5: (2.multiply x .add 5)
+n6: (2.multiply x .add 6)
+n7: (2.multiply x .add 7)
+n8: (2.multiply x .add 8)
+n9: (2.multiply x .add 9)
+n10: (2.multiply x .add 10)
 
 # Desugars to: (n10 (n9 (n8 (n7 (n6 (n5 (n4 (n3 (n2 (n1 x))))))))))
 # Mirrors the pattern (3 2 1 x | 5 4 | 6 | 10 9 8 7) from the spec.
