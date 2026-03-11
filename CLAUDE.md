@@ -13,13 +13,13 @@ All top-level definitions use `name: body`. The input is always the implicit var
 main: 0
 
 # function that uses x — the implicit input variable
-double: x.multiply 2
+double: (2.multiply x)
 
 # multi-argument operations use dot notation: receiver.operator argument
 factorial:
   {(x.lessThanOrEqual 1):
     1,
-  _: x.multiply (factorial (x.subtract 1))}
+  _: (x.multiply (factorial (x.subtract 1)))}
 ```
 
 There is no `define` keyword. Every definition is a function definition.
