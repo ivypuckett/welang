@@ -348,12 +348,18 @@ fn compile_expr(
             Expr::Symbol(op)
                 if matches!(
                     op.as_str(),
-                    "equal" | "lessThan" | "greaterThan" | "lessThanOrEqual" | "greaterThanOrEqual"
+                    "equal"
+                        | "equals"
+                        | "lessThan"
+                        | "greaterThan"
+                        | "lessThanOrEqual"
+                        | "greaterThanOrEqual"
                 ) =>
             {
-                let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
+                let canonical = if op == "equals" { "equal" } else { op.as_str() };
+                let (lhs, rhs) = unpack_binary_tuple(canonical, &items[1..])?;
                 compile_cmp(
-                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
+                    builder, module, registry, canonical, lhs, rhs, locals, next_var, builtins,
                 )
             }
             Expr::Symbol(kw) if kw == "print" => compile_print(

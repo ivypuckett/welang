@@ -50,6 +50,10 @@ pub enum ParseErrorKind {
     MissingCondWildcard,
     /// The `_` wildcard appeared before the last entry in a conditional.
     MisplacedCondWildcard,
+    /// A `.` appeared where it cannot start an expression.
+    UnexpectedDot,
+    /// A `.` was not followed by a symbol name.
+    InvalidDotAccess,
 }
 
 impl std::fmt::Display for ParseErrorKind {
@@ -94,6 +98,12 @@ impl std::fmt::Display for ParseErrorKind {
                 f,
                 "the '_' wildcard must be the last entry in a conditional"
             ),
+            ParseErrorKind::UnexpectedDot => {
+                write!(f, "unexpected '.' — dot access must follow an expression")
+            }
+            ParseErrorKind::InvalidDotAccess => {
+                write!(f, "expected a field or method name after '.'")
+            }
         }
     }
 }
@@ -196,8 +206,74 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     Ok(exprs)
 }
 
-/// Parse a single expression from `tokens` starting at `*pos`.
+/// Returns `true` if `token` can legally start a primary expression.
+fn can_start_expr(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::LParen
+            | Token::LBracket
+            | Token::LBrace
+            | Token::Quote
+            | Token::Number(_)
+            | Token::Bool(_)
+            | Token::Str(_)
+            | Token::Symbol(_)
+    )
+}
+
+/// Parse a single expression from `tokens` starting at `*pos`, including any
+/// trailing dot-access / dot-method postfix chains.
+///
+/// `expr.key`        desugars to `(get [expr, key])` (map field access).
+/// `expr.method arg` desugars to `(method [expr, arg])` (binary method call).
 fn parse_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseError> {
+    let mut expr = parse_primary(tokens, pos)?;
+
+    // Left-to-right dot-chain loop.
+    while *pos < tokens.len() && tokens[*pos].0 == Token::Dot {
+        let dot_line = tokens[*pos].1;
+        *pos += 1; // consume `.`
+
+        // Must be followed by a symbol (the field/method name).
+        let name = match *pos < tokens.len() {
+            true => match tokens[*pos].0.clone() {
+                Token::Symbol(s) => s,
+                _ => {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::InvalidDotAccess,
+                        line: tokens[*pos].1,
+                    });
+                }
+            },
+            false => {
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidDotAccess,
+                    line: dot_line,
+                });
+            }
+        };
+        *pos += 1; // consume symbol
+
+        // If the next token can start an expression, treat this as a binary
+        // method call: `lhs.method rhs` → `(method [lhs, rhs])`.
+        // Otherwise it's a map field access: `lhs.key` → `(get [lhs, key])`.
+        if *pos < tokens.len() && can_start_expr(&tokens[*pos].0) {
+            let rhs = parse_primary(tokens, pos)?;
+            expr = Expr::List(vec![Expr::Symbol(name), Expr::Tuple(vec![expr, rhs])]);
+        } else {
+            expr = Expr::List(vec![
+                Expr::Symbol("get".to_string()),
+                Expr::Tuple(vec![expr, Expr::Symbol(name)]),
+            ]);
+        }
+    }
+
+    Ok(expr)
+}
+
+/// Parse a single primary expression from `tokens` starting at `*pos`.
+/// Does not consume any trailing dot-access chains; call `parse_expr` for that.
+fn parse_primary(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseError> {
     if *pos >= tokens.len() {
         return Err(ParseError {
             kind: ParseErrorKind::UnmatchedOpenParen,
@@ -441,6 +517,10 @@ fn parse_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, ParseE
         }),
         Token::Pipe => Err(ParseError {
             kind: ParseErrorKind::UnexpectedPipe,
+            line: tok_line,
+        }),
+        Token::Dot => Err(ParseError {
+            kind: ParseErrorKind::UnexpectedDot,
             line: tok_line,
         }),
 
