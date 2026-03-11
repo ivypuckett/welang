@@ -1,5 +1,5 @@
 # Tests function composition.
-double: (multiply [2, x])
+double: x.multiply 2
 quadruple: (double (double x))
 
 main: {((quadruple 3).equals 12): 0, _: 1}

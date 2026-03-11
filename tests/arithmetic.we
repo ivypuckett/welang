@@ -1,7 +1,7 @@
-# Tests the four arithmetic operators with tuple arguments.
-double: (multiply [2, x])
-halve: (divide [x, 2])
-inc: (add [x, 1])
-dec: (subtract [x, 1])
+# Tests the four arithmetic operators with dot notation.
+double: x.multiply 2
+halve: x.divide 2
+inc: x.add 1
+dec: x.subtract 1
 
 main: {((double 5).equals 10): 0, _: 1}

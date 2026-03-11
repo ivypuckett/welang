@@ -8,7 +8,7 @@
 
 main:
   {(3f0.equals 3):
-    {((multiply [3f0, 2f0]).equals 6):
+    {(3f0.multiply 2f0 .equals 6):
       {(1f9.equals 1):
         {(3f14.equals 3): 0, _: 1},
       _: 1},

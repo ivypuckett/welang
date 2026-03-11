@@ -1,9 +1,9 @@
 # Tests conditional expressions and the rename binding.
-abs: {(lessThan [x, 0]): (subtract [0, x]), _: x}
+abs: {(x.lessThan 0): 0.subtract x, _: x}
 
-positive-only: {(greaterThan [x, 0]): x, _: 0}
+positive-only: {(x.greaterThan 0): x, _: 0}
 
 # rename x to n for readability
-abs-named: (n: {(lessThan [n, 0]): (subtract [0, n]), _: n})
+abs-named: (n: {(n.lessThan 0): 0.subtract n, _: n})
 
 main: {((abs -7).equals 7): 0, _: 1}

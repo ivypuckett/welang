@@ -1,5 +1,5 @@
 # Tests that the wildcard `_` arm is taken when no condition matches.
-clamp-positive: {(greaterThan [x, 0]): x, _: 0}
+clamp-positive: {(x.greaterThan 0): x, _: 0}
 
 main:
   {((clamp-positive -5).equals 0):

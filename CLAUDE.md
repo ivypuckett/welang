@@ -13,13 +13,13 @@ All top-level definitions use `name: body`. The input is always the implicit var
 main: 0
 
 # function that uses x — the implicit input variable
-double: (multiply [2, x])
+double: x.multiply 2
 
-# multi-argument operations use tuple syntax [a, b]
+# multi-argument operations use dot notation: receiver.operator argument
 factorial:
-  {(lessThanOrEqual [x, 1]):
+  {(x.lessThanOrEqual 1):
     1,
-  _: (multiply [x, (factorial (subtract [x, 1]))])}
+  _: x.multiply (factorial (x.subtract 1))}
 ```
 
 There is no `define` keyword. Every definition is a function definition.
@@ -29,8 +29,8 @@ Anything else at the top level is a compile-time error.
 ### Key rules
 
 - All functions use `name: body` syntax. The implicit parameter is always `x`.
-- Multi-argument operations use a **tuple**: `[a, b]`.
-- Built-in operators (`add subtract multiply divide equal lessThan greaterThan lessThanOrEqual greaterThanOrEqual`) each take a 2-element tuple.
+- Multi-argument operations use dot notation: `receiver.operator argument`.
+- Built-in operators: `add subtract multiply divide equals lessThan greaterThan lessThanOrEqual greaterThanOrEqual`.
 - `{(cond1): v1, (cond2): v2, _: default}` is a conditional expression. Conditions are evaluated left to right; the value of the first truthy arm is returned. The `_` wildcard is required and must be last.
 - `{k1: v1, k2: v2}` is a data map literal (keys are plain symbols, not wrapped in `()`).
 - `(name: body)` renames the implicit `x` to `name` within `body` (useful for closures).

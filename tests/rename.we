@@ -1,6 +1,6 @@
 # Tests that (name: body) rename binding works correctly at runtime,
 # giving the implicit parameter an explicit name inside the body.
-abs-named: (n: {(lessThan [n, 0]): (subtract [0, n]), _: n})
+abs-named: (n: {(n.lessThan 0): 0.subtract n, _: n})
 
 main:
   {((abs-named -9).equals 9):

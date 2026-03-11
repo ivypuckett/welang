@@ -1,12 +1,12 @@
 # Tests recursive function calls.
 factorial:
-  {(lessThanOrEqual [x, 1]):
+  {(x.lessThanOrEqual 1):
     1,
-  _: (multiply [x, (factorial (subtract [x, 1]))])}
+  _: x.multiply (factorial (x.subtract 1))}
 
 fib:
-  {(lessThan [x, 2]):
+  {(x.lessThan 2):
     x,
-  _: (add [(fib (subtract [x, 1])), (fib (subtract [x, 2]))])}
+  _: (fib (x.subtract 1)).add (fib (x.subtract 2))}
 
 main: {((factorial 5).equals 120): 0, _: 1}
