@@ -1,0 +1,27 @@
+# Tests dot notation for arithmetic and comparison operators.
+#
+#   x.add y                ≡  (add [x, y])
+#   x.subtract y           ≡  (subtract [x, y])
+#   x.multiply y           ≡  (multiply [x, y])
+#   x.divide y             ≡  (divide [x, y])
+#   x.lessThan y           ≡  (lessThan [x, y])
+#   x.greaterThan y        ≡  (greaterThan [x, y])
+#   x.lessThanOrEqual y    ≡  (lessThanOrEqual [x, y])
+#   x.greaterThanOrEqual y ≡  (greaterThanOrEqual [x, y])
+
+main:
+  {(5.add 3 .equals 8):
+    {(10.subtract 4 .equals 6):
+      {(3.multiply 4 .equals 12):
+        {(12.divide 4 .equals 3):
+          {(3.lessThan 5):
+            {(5.greaterThan 3):
+              {(5.lessThanOrEqual 5):
+                {(5.greaterThanOrEqual 5): 0, _: 1},
+              _: 1},
+            _: 1},
+          _: 1},
+        _: 1},
+      _: 1},
+    _: 1},
+  _: 1}
