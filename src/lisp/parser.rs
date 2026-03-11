@@ -876,6 +876,59 @@ mod tests {
         );
     }
 
+    // ---- decimal number syntax (3f14) ----------------------------------------
+
+    #[test]
+    fn test_decimal_literal_in_func_body() {
+        // `3f14` in source should parse to Expr::Number(3.14).
+        let result = parse("f: 3f14").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::Number(3.14),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_negative_decimal_literal_in_func_body() {
+        // `-1f5` in source should parse to Expr::Number(-1.5).
+        let result = parse("f: -1f5").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::Number(-1.5),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_decimal_in_tuple() {
+        // Decimal numbers should be accepted inside tuple expressions.
+        let result = parse("f: [1f5, 2f5]").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                Expr::Symbol("define".to_string()),
+                Expr::List(vec![
+                    Expr::Symbol("f".to_string()),
+                    Expr::Symbol("x".to_string()),
+                ]),
+                Expr::Tuple(vec![Expr::Number(1.5), Expr::Number(2.5)]),
+            ])
+        );
+    }
+
     // ---- conditional expressions ---------------------------------------------
 
     #[test]
