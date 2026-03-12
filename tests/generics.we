@@ -1,0 +1,26 @@
+# Generic structural types.
+# Generic type parameters introduce names that are resolved consistently
+# across the body type, so e.g. `<T _> (T | T)` constrains both the
+# parameter and return position to be the same type T.
+#
+# The return value of `main` is 0 on success.
+
+# ── Unconstrained generic (T can be anything) ────────────────────────────────
+# At runtime this is an identity function, just like all structural types.
+genericId: '<T _> (T | T)
+
+# ── Constrained generic (T must be i64) ──────────────────────────────────────
+intId: '<T i64> (T | T)
+
+# ── Generic map type (k1 and k2 must share the same type T) ──────────────────
+pairOfSame: '<T _> {k1: T, k2: T}
+
+# ── Multiple generic parameters ──────────────────────────────────────────────
+multiGeneric: '<T i64, U _> {k1: T, k2: U}
+
+# ── Nested generic in constraint ─────────────────────────────────────────────
+nestedGeneric: '<T i64, U <V _>{k1: V}> {k1: T, k2: U, k3: string}
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+# (genericId 0) returns 0 via the identity structural type.
+main: (genericId 0)

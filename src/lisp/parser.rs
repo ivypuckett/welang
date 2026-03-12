@@ -13,6 +13,11 @@ pub enum TypeExpr {
     Map(Vec<(String, TypeExpr)>),
     /// A function type written with pipe notation: `(InputType | OutputType)`.
     Function(Box<TypeExpr>, Box<TypeExpr>),
+    /// A generic type with explicit type parameters: `<T constraint, ...> body`.
+    ///
+    /// Each entry in the `Vec` is `(param_name, constraint)`.  The constraint
+    /// is itself a `TypeExpr`; a `Wildcard` constraint means unconstrained.
+    Generic(Vec<(String, TypeExpr)>, Box<TypeExpr>),
 }
 
 /// An expression in the AST.
@@ -125,7 +130,7 @@ impl std::fmt::Display for ParseErrorKind {
             ParseErrorKind::InvalidTypeExpr => {
                 write!(
                     f,
-                    "invalid type expression after ''' — expected a type name, '[T]', '{{k: T}}', or '(A | B)'"
+                    "invalid type expression after ''' — expected a type name, '[T]', '{{k: T}}', '(A | B)', or '<T C> body'"
                 )
             }
         }
@@ -437,6 +442,44 @@ fn parse_type_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<TypeExp
                 *pos += 1; // consume `)`
                 Ok(input_ty)
             }
+        }
+
+        // Generic type: `<T constraint, U constraint, ...> body`
+        Token::LAngle => {
+            *pos += 1; // consume `<`
+            let mut params: Vec<(String, TypeExpr)> = Vec::new();
+            loop {
+                if *pos >= tokens.len() {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::InvalidTypeExpr,
+                        line: tok_line,
+                    });
+                }
+                if tokens[*pos].0 == Token::RAngle {
+                    *pos += 1; // consume `>`
+                    break;
+                }
+                // Expect: Symbol type-expr
+                let param_name = match tokens[*pos].0.clone() {
+                    Token::Symbol(s) => s,
+                    _ => {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidTypeExpr,
+                            line: tokens[*pos].1,
+                        });
+                    }
+                };
+                *pos += 1; // consume param name
+                let constraint = parse_type_expr(tokens, pos)?;
+                params.push((param_name, constraint));
+                // Skip optional comma separator.
+                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
+                    *pos += 1;
+                }
+            }
+            // Parse the body type that follows the `<...>`.
+            let body = parse_type_expr(tokens, pos)?;
+            Ok(TypeExpr::Generic(params, Box::new(body)))
         }
 
         _ => Err(ParseError {
@@ -761,6 +804,11 @@ fn parse_primary(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, Par
         }),
         Token::Dot => Err(ParseError {
             kind: ParseErrorKind::UnexpectedDot,
+            line: tok_line,
+        }),
+
+        Token::LAngle | Token::RAngle => Err(ParseError {
+            kind: ParseErrorKind::InvalidTypeExpr,
             line: tok_line,
         }),
 
@@ -1521,5 +1569,112 @@ mod tests {
     fn test_invalid_type_expr_error() {
         // `'42` is not a valid type expression (number, not a type name/shape)
         assert_eq!(parse_err_kind("f: '42"), ParseErrorKind::InvalidTypeExpr);
+    }
+
+    // ---- generic type expressions (`'<T C> body`) ----------------------------
+
+    #[test]
+    fn test_generic_wildcard_function_type() {
+        // `genericId: '<T _> (T | T)` — identity for any type T
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("genericId: '<T _> (T | T)").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("genericId"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Generic(
+                    vec![("T".to_string(), TypeExpr::Wildcard)],
+                    Box::new(TypeExpr::Function(
+                        Box::new(TypeExpr::Named("T".to_string())),
+                        Box::new(TypeExpr::Named("T".to_string())),
+                    )),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_generic_constrained_map_type() {
+        // `pairOfSame: '<T _> {k1: T, k2: T}`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("pairOfSame: '<T _> {k1: T, k2: T}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("pairOfSame"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Generic(
+                    vec![("T".to_string(), TypeExpr::Wildcard)],
+                    Box::new(TypeExpr::Map(vec![
+                        ("k1".to_string(), TypeExpr::Named("T".to_string())),
+                        ("k2".to_string(), TypeExpr::Named("T".to_string())),
+                    ])),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_generic_multiple_params() {
+        // `multi: '<T i64, U _> {k1: T, k2: U}`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("multi: '<T i64, U _> {k1: T, k2: U}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("multi"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Generic(
+                    vec![
+                        ("T".to_string(), TypeExpr::Named("i64".to_string())),
+                        ("U".to_string(), TypeExpr::Wildcard),
+                    ],
+                    Box::new(TypeExpr::Map(vec![
+                        ("k1".to_string(), TypeExpr::Named("T".to_string())),
+                        ("k2".to_string(), TypeExpr::Named("U".to_string())),
+                    ])),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_generic_nested_constraint() {
+        // `nested: '<T i64, U <V _>{k1: V}> {k1: T}` — nested generic in constraint
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("nested: '<T i64, U <V _>{k1: V}> {k1: T}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("nested"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Generic(
+                    vec![
+                        ("T".to_string(), TypeExpr::Named("i64".to_string())),
+                        (
+                            "U".to_string(),
+                            TypeExpr::Generic(
+                                vec![("V".to_string(), TypeExpr::Wildcard)],
+                                Box::new(TypeExpr::Map(vec![(
+                                    "k1".to_string(),
+                                    TypeExpr::Named("V".to_string()),
+                                )])),
+                            ),
+                        ),
+                    ],
+                    Box::new(TypeExpr::Map(vec![(
+                        "k1".to_string(),
+                        TypeExpr::Named("T".to_string()),
+                    )])),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_generic_unclosed_angle_bracket_error() {
+        // `'<T _` — missing closing `>`
+        assert_eq!(parse_err_kind("f: '<T _"), ParseErrorKind::InvalidTypeExpr);
     }
 }

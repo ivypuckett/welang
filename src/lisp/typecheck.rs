@@ -106,6 +106,11 @@ fn unify(ctx: &mut Ctx, t1: &Ty, t2: &Ty, context: &str) -> Result<(), TypeError
 /// other automatically.
 type FuncVars = HashMap<String, (Ty, Ty)>;
 
+/// In-scope generic type parameter bindings, built when descending into a
+/// `TypeExpr::Generic` node.  Maps each type-parameter name (e.g. `"T"`) to
+/// the concrete `Ty` it was resolved to.
+type GenericBindings = HashMap<String, Ty>;
+
 // ---------------------------------------------------------------------------
 // Built-in type schemes
 // ---------------------------------------------------------------------------
@@ -119,17 +124,24 @@ type FuncVars = HashMap<String, (Ty, Ty)>;
 ///
 /// Primitive types `i64`, `f64`, and `bool` all lower to `int` because they
 /// share the same 64-bit machine representation.  Unknown user-defined type
-/// names are looked up in `func_vars` (to reuse the inferred return type of
-/// the named structural-type function); if not found a fresh type variable is
-/// returned so the type remains polymorphic.
-fn typeexpr_to_scalar(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> Ty {
+/// names are first looked up in `generics` (in-scope generic type parameters),
+/// then in `func_vars` (the named structural-type function); if not found a
+/// fresh type variable is returned so the type remains polymorphic.
+fn typeexpr_to_scalar(
+    ty: &TypeExpr,
+    ctx: &mut Ctx,
+    func_vars: &FuncVars,
+    generics: &GenericBindings,
+) -> Ty {
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
             "i64" | "f64" | "bool" | "int" => ty_int(),
             "str" | "string" => ty_str(),
             _ => {
-                // User-defined type name: reuse its inferred return type if known.
-                if let Some((_, ret_ty)) = func_vars.get(name.as_str()) {
+                // Generic type parameter takes priority over any global name.
+                if let Some(ty) = generics.get(name.as_str()) {
+                    ty.clone()
+                } else if let Some((_, ret_ty)) = func_vars.get(name.as_str()) {
                     ret_ty.clone()
                 } else {
                     ctx.new_variable()
@@ -137,10 +149,20 @@ fn typeexpr_to_scalar(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> Ty 
             }
         },
         TypeExpr::Wildcard => ctx.new_variable(),
-        TypeExpr::Array(elem) => ty_tuple(typeexpr_to_scalar(elem, ctx, func_vars)),
+        TypeExpr::Array(elem) => ty_tuple(typeexpr_to_scalar(elem, ctx, func_vars, generics)),
         TypeExpr::Map(_) => ty_map(ctx.new_variable()),
         // For function types used in scalar context, return the output type.
-        TypeExpr::Function(_, output) => typeexpr_to_scalar(output, ctx, func_vars),
+        TypeExpr::Function(_, output) => typeexpr_to_scalar(output, ctx, func_vars, generics),
+        // Generic type: resolve each param to its constraint type (or a fresh
+        // variable for wildcards), extend the bindings, then convert the body.
+        TypeExpr::Generic(params, body) => {
+            let mut extended = generics.clone();
+            for (name, constraint) in params {
+                let param_ty = typeexpr_to_scalar(constraint, ctx, func_vars, &extended);
+                extended.insert(name.clone(), param_ty);
+            }
+            typeexpr_to_scalar(body, ctx, func_vars, &extended)
+        }
     }
 }
 
@@ -148,15 +170,29 @@ fn typeexpr_to_scalar(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> Ty 
 ///
 /// For `Function(A, B)` this returns `(A_ty, B_ty)`.  For all other types
 /// the same scalar type is used for both positions (identity function).
-fn typeexpr_to_param_ret(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> (Ty, Ty) {
+fn typeexpr_to_param_ret(
+    ty: &TypeExpr,
+    ctx: &mut Ctx,
+    func_vars: &FuncVars,
+    generics: &GenericBindings,
+) -> (Ty, Ty) {
     match ty {
         TypeExpr::Function(input, output) => {
-            let param = typeexpr_to_scalar(input, ctx, func_vars);
-            let ret = typeexpr_to_scalar(output, ctx, func_vars);
+            let param = typeexpr_to_scalar(input, ctx, func_vars, generics);
+            let ret = typeexpr_to_scalar(output, ctx, func_vars, generics);
             (param, ret)
         }
+        // Generic type: resolve params, then decompose the body.
+        TypeExpr::Generic(params, body) => {
+            let mut extended = generics.clone();
+            for (name, constraint) in params {
+                let param_ty = typeexpr_to_scalar(constraint, ctx, func_vars, &extended);
+                extended.insert(name.clone(), param_ty);
+            }
+            typeexpr_to_param_ret(body, ctx, func_vars, &extended)
+        }
         other => {
-            let scalar = typeexpr_to_scalar(other, ctx, func_vars);
+            let scalar = typeexpr_to_scalar(other, ctx, func_vars, generics);
             (scalar.clone(), scalar)
         }
     }
@@ -214,7 +250,8 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                 // (user-defined type names in it will become fresh variables here;
                 // they are resolved properly in Pass 2 if needed).
                 let empty: FuncVars = HashMap::new();
-                let (param_ty, ret_ty) = typeexpr_to_param_ret(type_expr, &mut ctx, &empty);
+                let (param_ty, ret_ty) =
+                    typeexpr_to_param_ret(type_expr, &mut ctx, &empty, &HashMap::new());
                 func_vars.insert(name.to_string(), (param_ty, ret_ty));
             } else {
                 let param_ty = ctx.new_variable();
@@ -242,7 +279,8 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
             // IS the type descriptor; the function is an identity — it returns
             // its argument unchanged, so the return type equals the param type.
             let inferred = if let Expr::StructuralType(type_expr) = body {
-                let (ann_param, ann_ret) = typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars);
+                let (ann_param, ann_ret) =
+                    typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars, &HashMap::new());
                 let param_applied = param_ty.apply(&ctx);
                 unify(
                     &mut ctx,
@@ -284,7 +322,7 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                     Expr::StructuralType(type_expr) => {
                         // Inline type annotation: constrain both param and return.
                         let (ann_param, ann_ret) =
-                            typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars);
+                            typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars, &HashMap::new());
                         let param_applied = param_ty.apply(&ctx);
                         unify(
                             &mut ctx,
@@ -958,5 +996,72 @@ mod tests {
             msg.contains("mismatch"),
             "expected type mismatch from annotation, got: {msg}"
         );
+    }
+
+    // ── generic structural types ─────────────────────────────────────────────
+
+    #[test]
+    fn test_generic_wildcard_function_ok() {
+        // `<T _> (T | T)` — identity for any type
+        assert!(check("genericId: '<T _> (T | T)\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_generic_constrained_function_ok() {
+        // `<T i64> (T | T)` — T must be i64
+        assert!(check("intId: '<T i64> (T | T)\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_generic_map_ok() {
+        // `<T _> {k1: T, k2: T}` — both fields share type T
+        assert!(check("pairOfSame: '<T _> {k1: T, k2: T}\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_generic_multiple_params_ok() {
+        assert!(check("multi: '<T i64, U _> {k1: T, k2: U}\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_generic_nested_constraint_ok() {
+        // `<T i64, U <V _>{k1: V}>` — nested generic in constraint
+        assert!(
+            check("nested: '<T i64, U <V _>{k1: V}> {k1: T, k2: U, k3: string}\nmain: 0").is_ok()
+        );
+    }
+
+    #[test]
+    fn test_generic_call_constrained_ok() {
+        // Calling an i64-constrained generic identity with an int is fine.
+        let src = "
+            intId: '<T i64> (T | T)
+            main: (intId 42)
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_generic_call_constrained_type_mismatch() {
+        // Calling an i64-constrained identity with a string is a type error.
+        let src = r#"
+            intId: '<T i64> (T | T)
+            main: (intId "hello")
+        "#;
+        let msg = check_err(src);
+        assert!(
+            msg.contains("mismatch"),
+            "expected type mismatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_generic_call_wildcard_int_ok() {
+        // Wildcard generic accepts any type, including int.
+        let src = "
+            genericId: '<T _> (T | T)
+            main: (genericId 0)
+        ";
+        assert!(check(src).is_ok());
     }
 }
