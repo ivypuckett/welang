@@ -1,0 +1,15 @@
+# Test that map literals can have values of heterogeneous types,
+# as long as all values are constructed from the same input type.
+#
+# The function `getVal` builds a map where `label` is a string literal and
+# `value` is the raw integer input.  The values have different types (str and
+# int) but are both constructed from the same `x: int` input.
+#
+# We read back the integer field via dot notation and verify it is correct.
+
+getVal: (get [{label: "number", value: x}, value])
+
+main:
+  {((getVal 5).equals 5):
+    0,
+  _: 1}

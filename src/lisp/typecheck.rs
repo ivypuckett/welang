@@ -7,7 +7,7 @@
 //! | number literal / boolean literal  | `int`               |
 //! | string literal                    | `str`               |
 //! | `[a, b]` tuple                    | `tuple(T)` – both elements must be `T` |
-//! | `{k: v, …}` map                   | `map(T)` – all values must be `T`      |
+//! | `{k: v, …}` map                   | `map(α)` – values may differ; all must accept the same input type |
 //! | function `name: body`             | `α → β`             |
 //!
 //! ## Rules applied during inference
@@ -27,8 +27,10 @@
 //!   calls before this pass runs, so composition type-flow is checked
 //!   automatically through function-application inference.
 //! * In `[a, b]` tuples every element must share the same type.
-//! * In `{k: v, …}` maps every value must share the same type.
-
+//! * In `{k: v, …}` maps every value expression must accept the same input type
+///   (i.e. the type of `x` must be consistent), but the values themselves may
+///   have different types.  The map type is `map(α)` where `α` is a fresh
+///   unconstrained variable.
 use std::collections::HashMap;
 
 use polytype::{Context, Type, TypeScheme};
@@ -260,25 +262,19 @@ fn infer_expr(
         }
 
         // ── Map literal `{k: v, …}` ──────────────────────────────────────
-        // All values must share the same type.
+        // Values may have different types; the only constraint is that every
+        // value expression must accept the same input type for `x` (which is
+        // already guaranteed by sharing the same `env`).  We still infer each
+        // value so that `x`-type constraints from individual entries are
+        // accumulated and unified through the shared environment.
         Expr::Map(entries) => {
-            if entries.is_empty() {
-                let val_ty = ctx.new_variable();
-                return Ok(ty_map(val_ty));
+            for (_key, val_expr) in entries {
+                infer_expr(val_expr, env, func_vars, ctx, func_name)?;
             }
-            let first_ty = infer_expr(&entries[0].1, env, func_vars, ctx, func_name)?;
-            for (i, (_key, val_expr)) in entries.iter().enumerate().skip(1) {
-                let val_ty = infer_expr(val_expr, env, func_vars, ctx, func_name)?;
-                let first_applied = first_ty.apply(ctx);
-                let val_applied = val_ty.apply(ctx);
-                unify(
-                    ctx,
-                    &val_applied,
-                    &first_applied,
-                    &format!("map value at position {i} in function '{func_name}'"),
-                )?;
-            }
-            Ok(ty_map(first_ty.apply(ctx)))
+            // The map's value type is left as a fresh unconstrained variable
+            // because entries may return different types.
+            let val_ty = ctx.new_variable();
+            Ok(ty_map(val_ty))
         }
 
         // ── Conditional `{(cond): v, …, _: default}` ─────────────────────
@@ -612,12 +608,17 @@ mod tests {
     }
 
     #[test]
-    fn test_map_mixed_value_types() {
-        let msg = check_err(r#"main: {a: 1, b: "hello"}"#);
-        assert!(
-            msg.contains("mismatch"),
-            "expected type mismatch, got: {msg}"
-        );
+    fn test_map_heterogeneous_values_ok() {
+        // Values with different types (str and int) are now allowed because both
+        // entries accept the same input type for `x` (unconstrained here).
+        assert!(check(r#"f: {label: "hello", count: x}"#).is_ok());
+    }
+
+    #[test]
+    fn test_map_mixed_value_types_ok() {
+        // A map whose values are a string literal and an int literal is valid:
+        // neither entry constrains `x`, so the input type is consistent.
+        assert!(check(r#"main: {a: 1, b: "hello"}"#).is_ok());
     }
 
     #[test]
