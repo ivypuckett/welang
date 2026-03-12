@@ -1,5 +1,20 @@
 use crate::lisp::lexer::{LexError, Token, tokenize};
 
+/// A structural type expression, appearing after the `'` quote marker.
+#[derive(Debug, PartialEq, Clone)]
+pub enum TypeExpr {
+    /// A named primitive or user-defined type: `i64`, `f64`, `bool`, `myType`.
+    Named(String),
+    /// A wildcard type `_` — matches any type.
+    Wildcard,
+    /// An array / list type: `[T]`.
+    Array(Box<TypeExpr>),
+    /// A map type: `{k1: T1, k2: T2, ...}`.
+    Map(Vec<(String, TypeExpr)>),
+    /// A function type written with pipe notation: `(InputType | OutputType)`.
+    Function(Box<TypeExpr>, Box<TypeExpr>),
+}
+
 /// An expression in the AST.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
@@ -7,7 +22,8 @@ pub enum Expr {
     Bool(bool),
     Str(String),
     Symbol(String),
-    Quote(Box<Expr>),
+    /// A structural type expression created by the `'` marker: `'i64`, `'[bool]`, etc.
+    StructuralType(TypeExpr),
     /// A parenthesised call or special form: `(f arg)`.
     List(Vec<Expr>),
     /// A tuple literal: `[e1, e2, ...]`.
@@ -54,6 +70,8 @@ pub enum ParseErrorKind {
     UnexpectedDot,
     /// A `.` was not followed by a symbol name.
     InvalidDotAccess,
+    /// A structural type expression after `'` was malformed.
+    InvalidTypeExpr,
 }
 
 impl std::fmt::Display for ParseErrorKind {
@@ -104,6 +122,12 @@ impl std::fmt::Display for ParseErrorKind {
             ParseErrorKind::InvalidDotAccess => {
                 write!(f, "expected a field or method name after '.'")
             }
+            ParseErrorKind::InvalidTypeExpr => {
+                write!(
+                    f,
+                    "invalid type expression after ''' — expected a type name, '[T]', '{{k: T}}', or '(A | B)'"
+                )
+            }
         }
     }
 }
@@ -140,7 +164,42 @@ fn line_at(tokens: &[(Token, usize)], pos: usize) -> usize {
     }
 }
 
+/// True when the tokens at `pos` unambiguously begin a new function definition.
+///
+/// Three forms are recognised:
+///
+/// 1. `name: body`              — plain definition
+/// 2. `name typeRef: body`      — named type annotation
+/// 3. `name 'typeExpr: body`    — inline structural type annotation
 fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
+    if !matches!(&tokens[pos].0, Token::Symbol(_)) {
+        return false;
+    }
+    // Case 1: `name: body`  (no annotation)
+    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::Colon {
+        return true;
+    }
+    // Case 2: `name typeRef: body`  (named type annotation)
+    if pos + 2 < tokens.len()
+        && matches!(&tokens[pos + 1].0, Token::Symbol(s) if s != "_")
+        && tokens[pos + 2].0 == Token::Colon
+    {
+        return true;
+    }
+    // Case 3: `name 'typeExpr: body`  (inline structural type annotation)
+    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::Quote {
+        return true;
+    }
+    false
+}
+
+/// True only for the original minimal `Symbol :` form.
+///
+/// Used by the *missing-body* guard inside `parse()` to avoid a false
+/// positive when a body expression is a plain symbol that happens to be
+/// followed by the start of the next definition (which would match the
+/// case-2 pattern `Symbol Symbol :`).
+fn is_plain_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
     matches!(&tokens[pos].0, Token::Symbol(_))
         && pos + 1 < tokens.len()
         && tokens[pos + 1].0 == Token::Colon
@@ -148,14 +207,20 @@ fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
 
 /// Parse a source string into a list of top-level function definitions.
 ///
-/// Only function definitions are allowed at the top level:
+/// Only function definitions are allowed at the top level.  Three forms:
 ///
-/// - `name: body`  — function with implicit parameter `x`
+/// - `name: body`              — function with implicit parameter `x`
+/// - `name typeRef: body`      — function annotated with a named type
+/// - `name 'typeExpr: body`    — function annotated with an inline structural type
 ///
 /// If the body does not reference `x`, the function behaves as a
 /// zero-argument function. The body is exactly one expression (monadic).
 /// Multi-arg functions do not exist; pass a tuple `[a, b]` to built-in
 /// operators instead.
+///
+/// Annotated definitions desugar to `(define (name x) body annotation)` where
+/// `annotation` is either an `Expr::Symbol` (named) or `Expr::StructuralType`
+/// (inline).  Unannotated definitions omit the fourth element.
 pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     let tokens = tokenize(input)?;
     let mut pos = 0;
@@ -174,13 +239,53 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
             _ => unreachable!(),
         };
         let def_line = tokens[pos].1;
-        pos += 2; // consume name and colon
+        pos += 1; // consume name
+
+        // Consume the optional type annotation, then the colon.
+        let annotation: Option<Expr> = if pos < tokens.len() && tokens[pos].0 == Token::Colon {
+            // Plain `name: body` — no annotation.
+            pos += 1; // consume `:`
+            None
+        } else if pos + 1 < tokens.len()
+            && matches!(&tokens[pos].0, Token::Symbol(_))
+            && tokens[pos + 1].0 == Token::Colon
+        {
+            // `name typeRef: body` — named type annotation.
+            let type_name = match tokens[pos].0.clone() {
+                Token::Symbol(s) => s,
+                _ => unreachable!(),
+            };
+            pos += 1; // consume type name
+            pos += 1; // consume `:`
+            Some(Expr::Symbol(type_name))
+        } else if pos < tokens.len() && tokens[pos].0 == Token::Quote {
+            // `name 'typeExpr: body` — inline structural type annotation.
+            pos += 1; // consume `'`
+            let ty = parse_type_expr(&tokens, &mut pos)?;
+            if pos >= tokens.len() || tokens[pos].0 != Token::Colon {
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidFuncDef,
+                    line: def_line,
+                });
+            }
+            pos += 1; // consume `:`
+            Some(Expr::StructuralType(ty))
+        } else {
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidFuncDef,
+                line: def_line,
+            });
+        };
 
         // All functions have an implicit parameter `x`.
         let param_names: Vec<String> = vec!["x".to_string()];
 
         // Parse exactly one body expression.
-        if pos >= tokens.len() || is_func_def_start(&tokens, pos) {
+        //
+        // Use `is_plain_func_def_start` (Symbol Colon only) here — the full
+        // `is_func_def_start` would trigger a false positive when the body is
+        // a plain symbol followed by `nextName: …` (matching case 2).
+        if pos >= tokens.len() || is_plain_func_def_start(&tokens, pos) {
             return Err(ParseError {
                 kind: ParseErrorKind::InvalidFuncDef,
                 line: def_line,
@@ -196,14 +301,149 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
             });
         }
 
-        // Desugar to `(define (name params...) body)` for codegen.
+        // Desugar to `(define (name x) body)` or
+        //             `(define (name x) body annotation)` for typed definitions.
         let mut sig = vec![Expr::Symbol(name)];
         sig.extend(param_names.into_iter().map(Expr::Symbol));
-        let items = vec![Expr::Symbol("define".to_string()), Expr::List(sig), body];
+        let mut items = vec![Expr::Symbol("define".to_string()), Expr::List(sig), body];
+        if let Some(ann) = annotation {
+            items.push(ann);
+        }
         exprs.push(Expr::List(items));
     }
 
     Ok(exprs)
+}
+
+// ---------------------------------------------------------------------------
+// Structural type expression parser
+// ---------------------------------------------------------------------------
+
+/// Parse a structural type expression starting at `*pos`.
+///
+/// Grammar (after the leading `'` has been consumed):
+///
+/// ```text
+/// type-expr  ::= named-type | wildcard | array-type | map-type | func-type
+/// named-type ::= Symbol              (e.g. `i64`, `f64`, `bool`, `myType`)
+/// wildcard   ::= `_`
+/// array-type ::= `[` type-expr `]`
+/// map-type   ::= `{` (Symbol `:` type-expr (`,`)?)* `}`
+/// func-type  ::= `(` type-expr `|` type-expr `)`
+/// ```
+fn parse_type_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<TypeExpr, ParseError> {
+    if *pos >= tokens.len() {
+        return Err(ParseError {
+            kind: ParseErrorKind::MissingQuoteTarget,
+            line: line_at(tokens, *pos),
+        });
+    }
+    let tok_line = tokens[*pos].1;
+
+    match tokens[*pos].0.clone() {
+        // Wildcard `_`
+        Token::Symbol(s) if s == "_" => {
+            *pos += 1;
+            Ok(TypeExpr::Wildcard)
+        }
+
+        // Named type: any symbol that is not `_`
+        Token::Symbol(s) => {
+            *pos += 1;
+            Ok(TypeExpr::Named(s))
+        }
+
+        // Array type: `[T]`
+        Token::LBracket => {
+            *pos += 1; // consume `[`
+            let inner = parse_type_expr(tokens, pos)?;
+            if *pos >= tokens.len() || tokens[*pos].0 != Token::RBracket {
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnmatchedOpenBracket,
+                    line: tok_line,
+                });
+            }
+            *pos += 1; // consume `]`
+            Ok(TypeExpr::Array(Box::new(inner)))
+        }
+
+        // Map type: `{k1: T1, k2: T2, ...}`
+        Token::LBrace => {
+            *pos += 1; // consume `{`
+            let mut entries: Vec<(String, TypeExpr)> = Vec::new();
+            loop {
+                if *pos >= tokens.len() {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenBrace,
+                        line: tok_line,
+                    });
+                }
+                if tokens[*pos].0 == Token::RBrace {
+                    *pos += 1;
+                    break;
+                }
+                // Expect: Symbol `:` type-expr
+                let key = match tokens[*pos].0.clone() {
+                    Token::Symbol(s) => s,
+                    _ => {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::InvalidMapEntry,
+                            line: tokens[*pos].1,
+                        });
+                    }
+                };
+                *pos += 1; // consume key
+                if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::InvalidMapEntry,
+                        line: line_at(tokens, *pos),
+                    });
+                }
+                *pos += 1; // consume `:`
+                let val_ty = parse_type_expr(tokens, pos)?;
+                entries.push((key, val_ty));
+                // Skip optional comma separator.
+                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
+                    *pos += 1;
+                }
+            }
+            Ok(TypeExpr::Map(entries))
+        }
+
+        // Function type: `(InputType | OutputType)`  or grouped type: `(T)`
+        Token::LParen => {
+            *pos += 1; // consume `(`
+            let input_ty = parse_type_expr(tokens, pos)?;
+            if *pos < tokens.len() && tokens[*pos].0 == Token::Pipe {
+                // Function type `(A | B)`
+                *pos += 1; // consume `|`
+                let output_ty = parse_type_expr(tokens, pos)?;
+                if *pos >= tokens.len() || tokens[*pos].0 != Token::RParen {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenParen,
+                        line: tok_line,
+                    });
+                }
+                *pos += 1; // consume `)`
+                Ok(TypeExpr::Function(Box::new(input_ty), Box::new(output_ty)))
+            } else {
+                // Grouped type `(T)` — just unwrap the inner type.
+                if *pos >= tokens.len() || tokens[*pos].0 != Token::RParen {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::UnmatchedOpenParen,
+                        line: tok_line,
+                    });
+                }
+                *pos += 1; // consume `)`
+                Ok(input_ty)
+            }
+        }
+
+        _ => Err(ParseError {
+            kind: ParseErrorKind::InvalidTypeExpr,
+            line: tok_line,
+        }),
+    }
 }
 
 /// Returns `true` if `token` can legally start a primary expression.
@@ -532,8 +772,8 @@ fn parse_primary(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, Par
                     line: tok_line,
                 });
             }
-            let inner = parse_expr(tokens, pos)?;
-            Ok(Expr::Quote(Box::new(inner)))
+            let ty = parse_type_expr(tokens, pos)?;
+            Ok(Expr::StructuralType(ty))
         }
 
         Token::Number(n) => {
@@ -1089,5 +1329,197 @@ mod tests {
                 Expr::Cond(vec![(None, Expr::Number(42.0))]),
             ])
         );
+    }
+
+    // ---- structural types (`'`) -----------------------------------------------
+
+    #[test]
+    fn test_structural_type_named_i64() {
+        // `anyInt: 'i64` desugars to a define whose body is StructuralType(Named("i64"))
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("anyInt: 'i64").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("anyInt"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Named("i64".to_string())),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_wildcard() {
+        // `f: '_` — wildcard structural type
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("f: '_").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Wildcard),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_array() {
+        // `anyIntArray: '[i64]`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("anyIntArray: '[i64]").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("anyIntArray"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Array(Box::new(TypeExpr::Named(
+                    "i64".to_string()
+                )))),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_nested_array() {
+        // `twoDim: '[[i64]]`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("twoDim: '[[i64]]").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("twoDim"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Array(Box::new(TypeExpr::Array(Box::new(
+                    TypeExpr::Named("i64".to_string())
+                ))))),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_map() {
+        // `anyMap: '{k1: bool, k2: i64}`
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("anyMap: '{k1: bool, k2: i64}").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("anyMap"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Map(vec![
+                    ("k1".to_string(), TypeExpr::Named("bool".to_string())),
+                    ("k2".to_string(), TypeExpr::Named("i64".to_string())),
+                ])),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_function() {
+        // `anyFn: '(i64 | bool)` — function type
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("anyFn: '(i64 | bool)").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("anyFn"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Function(
+                    Box::new(TypeExpr::Named("i64".to_string())),
+                    Box::new(TypeExpr::Named("bool".to_string())),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_function_wildcard() {
+        // `discard: '(_|_)` — both input and output wildcarded
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("discard: '(_|_)").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("discard"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Function(
+                    Box::new(TypeExpr::Wildcard),
+                    Box::new(TypeExpr::Wildcard),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_named_type_annotation() {
+        // `labelUsage anyFloat: 2` — named type annotation on function def
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("labelUsage anyFloat: 2").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("labelUsage"), sym("x")]),
+                Expr::Number(2.0),
+                sym("anyFloat"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_inline_type_annotation() {
+        // `typed 'i64: 42` — inline structural type annotation on function def
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("typed 'i64: 42").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("typed"), sym("x")]),
+                Expr::Number(42.0),
+                Expr::StructuralType(TypeExpr::Named("i64".to_string())),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_inline_function_type_annotation() {
+        // `not '(bool | bool): 0` — inline function type annotation
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("not '(bool | bool): 0").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("not"), sym("x")]),
+                Expr::Number(0.0),
+                Expr::StructuralType(TypeExpr::Function(
+                    Box::new(TypeExpr::Named("bool".to_string())),
+                    Box::new(TypeExpr::Named("bool".to_string())),
+                )),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_structural_type_in_expr_position() {
+        // `f: 'bool` as a body expr — StructuralType in value position
+        let sym = |s: &str| Expr::Symbol(s.to_string());
+        let result = parse("f: 'bool").unwrap();
+        assert_eq!(
+            result[0],
+            Expr::List(vec![
+                sym("define"),
+                Expr::List(vec![sym("f"), sym("x")]),
+                Expr::StructuralType(TypeExpr::Named("bool".to_string())),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_invalid_type_expr_error() {
+        // `'42` is not a valid type expression (number, not a type name/shape)
+        assert_eq!(parse_err_kind("f: '42"), ParseErrorKind::InvalidTypeExpr);
     }
 }
