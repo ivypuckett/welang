@@ -1,0 +1,38 @@
+# Structural types test file.
+# Every structural type function is an identity function at runtime.
+# The return value of `main` is 0 on success.
+
+# ── Primitive structural types ───────────────────────────────────────────────
+anyInt: 'i64
+anyFloat: 'f64
+anyBool: 'bool
+
+# ── Compound structural types ────────────────────────────────────────────────
+anyIntArray: '[i64]
+anyMap: '{k1: bool, k2: i64}
+anyTwoDimensionalArray: '[[i64]]
+
+# ── Function structural types ────────────────────────────────────────────────
+anyFunction: '(i64 | i64)
+functionWithDiscard: '(_|_)
+
+# ── Calling a structural type function acts as an identity / type assertion ──
+# (anyInt 42) returns 42 because structural type functions are identity fns.
+checkInt: (anyInt 42)
+
+# ── Named type annotation on a function definition ──────────────────────────
+# `labelUsage anyFloat: 42` declares that labelUsage's return type matches
+# anyFloat (i.e. f64/int).
+labelUsage anyFloat: 42
+
+# ── Inline structural type annotation ───────────────────────────────────────
+# `id '(i64 | i64): x` declares the function's full type inline.
+id '(i64 | i64): x
+
+# ── Structural type used in function call position ───────────────────────────
+# (functionUsage 99) returns 99 via the anyFloat identity assertion.
+functionUsage: (anyFloat 99)
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+# Verify the identity call returns the right value: (anyInt 0) = 0.
+main: (anyInt 0)

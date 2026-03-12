@@ -180,7 +180,9 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             && kw == "define"
             && let Expr::List(sig_items) = &items[1]
         {
-            compile_function(&mut module, &registry, sig_items, &items[2..], &builtins)?;
+            // items[2] is always the body; items[3] (if present) is the
+            // type annotation, which is compile-time only — skip it here.
+            compile_function(&mut module, &registry, sig_items, &items[2], &builtins)?;
         }
     }
 
@@ -192,7 +194,7 @@ fn compile_function(
     module: &mut ObjectModule,
     registry: &HashMap<String, FuncInfo>,
     sig_items: &[Expr],
-    body: &[Expr],
+    body: &Expr,
     builtins: &Builtins,
 ) -> Result<(), CompileError> {
     let name = match sig_items.first() {
@@ -241,18 +243,29 @@ fn compile_function(
             }
         }
 
-        let mut result = builder.ins().iconst(types::I64, 0);
-        for expr in body {
-            result = compile_expr(
+        // Structural-type functions (`name: 'type`) are identity functions:
+        // they return their argument `x` unchanged (the type check is
+        // compile-time only).
+        let result = if let Expr::StructuralType(_) = body {
+            if info.is_main {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                match locals.get("x") {
+                    Some(&var) => builder.use_var(var),
+                    None => builder.ins().iconst(types::I64, 0),
+                }
+            }
+        } else {
+            compile_expr(
                 &mut builder,
                 module,
                 registry,
-                expr,
+                body,
                 &mut locals,
                 &mut next_var,
                 builtins,
-            )?;
-        }
+            )?
+        };
 
         if info.is_main {
             let r32 = builder.ins().ireduce(types::I32, result);
@@ -406,7 +419,11 @@ fn compile_expr(
             other => Err(format!("cannot call {:?} as a function", other)),
         },
 
-        Expr::Quote(_) => Err("quoted expressions are not supported in compiled code".to_string()),
+        // Structural type expressions (`'i64`, `'[bool]`, …) in value position
+        // compile to the integer 0 — they are compile-time type descriptors with
+        // no runtime payload.
+        Expr::StructuralType(_) => Ok(builder.ins().iconst(types::I64, 0)),
+
         Expr::Str(_) => {
             Err("string literals are only supported as arguments to 'print'".to_string())
         }

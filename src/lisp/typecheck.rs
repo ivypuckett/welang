@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use polytype::{Context, Type, TypeScheme};
 
-use super::parser::Expr;
+use super::parser::{Expr, TypeExpr};
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -110,6 +110,62 @@ type FuncVars = HashMap<String, (Ty, Ty)>;
 // Built-in type schemes
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Structural type → Ty conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a `TypeExpr` to a concrete `Ty`, treating `Function(A, B)` as its
+/// output type `B` (the scalar return type of the function).
+///
+/// Primitive types `i64`, `f64`, and `bool` all lower to `int` because they
+/// share the same 64-bit machine representation.  Unknown user-defined type
+/// names are looked up in `func_vars` (to reuse the inferred return type of
+/// the named structural-type function); if not found a fresh type variable is
+/// returned so the type remains polymorphic.
+fn typeexpr_to_scalar(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> Ty {
+    match ty {
+        TypeExpr::Named(name) => match name.as_str() {
+            "i64" | "f64" | "bool" | "int" => ty_int(),
+            "str" | "string" => ty_str(),
+            _ => {
+                // User-defined type name: reuse its inferred return type if known.
+                if let Some((_, ret_ty)) = func_vars.get(name.as_str()) {
+                    ret_ty.clone()
+                } else {
+                    ctx.new_variable()
+                }
+            }
+        },
+        TypeExpr::Wildcard => ctx.new_variable(),
+        TypeExpr::Array(elem) => ty_tuple(typeexpr_to_scalar(elem, ctx, func_vars)),
+        TypeExpr::Map(_) => ty_map(ctx.new_variable()),
+        // For function types used in scalar context, return the output type.
+        TypeExpr::Function(_, output) => typeexpr_to_scalar(output, ctx, func_vars),
+    }
+}
+
+/// Decompose a `TypeExpr` into `(param_type, return_type)`.
+///
+/// For `Function(A, B)` this returns `(A_ty, B_ty)`.  For all other types
+/// the same scalar type is used for both positions (identity function).
+fn typeexpr_to_param_ret(ty: &TypeExpr, ctx: &mut Ctx, func_vars: &FuncVars) -> (Ty, Ty) {
+    match ty {
+        TypeExpr::Function(input, output) => {
+            let param = typeexpr_to_scalar(input, ctx, func_vars);
+            let ret = typeexpr_to_scalar(output, ctx, func_vars);
+            (param, ret)
+        }
+        other => {
+            let scalar = typeexpr_to_scalar(other, ctx, func_vars);
+            (scalar.clone(), scalar)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Built-in type schemes
+// ---------------------------------------------------------------------------
+
 /// Return the static type scheme for a built-in operator, or `None` if the
 /// name is not a built-in.
 fn builtin_scheme(name: &str) -> Option<Scheme> {
@@ -147,17 +203,30 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
     let mut func_vars: FuncVars = HashMap::new();
 
     // --- Pass 1: seed fresh type variables for every function ---------------
+    //
+    // For structural-type function bodies (`name: 'type`), we can seed
+    // concrete types immediately from the TypeExpr instead of fresh variables.
+    // This lets call-sites see the exact type constraint from the start.
     for expr in exprs {
-        if let Some((name, _params, _body)) = extract_define(expr) {
-            let param_ty = ctx.new_variable();
-            let ret_ty = ctx.new_variable();
-            func_vars.insert(name.to_string(), (param_ty, ret_ty));
+        if let Some((name, _params, body, _ann)) = extract_define(expr) {
+            if let Expr::StructuralType(type_expr) = body {
+                // Use a temporary empty func_vars to convert the TypeExpr
+                // (user-defined type names in it will become fresh variables here;
+                // they are resolved properly in Pass 2 if needed).
+                let empty: FuncVars = HashMap::new();
+                let (param_ty, ret_ty) = typeexpr_to_param_ret(type_expr, &mut ctx, &empty);
+                func_vars.insert(name.to_string(), (param_ty, ret_ty));
+            } else {
+                let param_ty = ctx.new_variable();
+                let ret_ty = ctx.new_variable();
+                func_vars.insert(name.to_string(), (param_ty, ret_ty));
+            }
         }
     }
 
     // --- Pass 2: infer and unify --------------------------------------------
     for expr in exprs {
-        if let Some((name, param_names, body)) = extract_define(expr) {
+        if let Some((name, param_names, body, annotation)) = extract_define(expr) {
             let (param_ty, ret_ty) = func_vars[name].clone();
 
             // Build the local variable environment: bind each declared
@@ -167,10 +236,75 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                 env.insert((*p).to_string(), param_ty.clone());
             }
 
-            let inferred = infer_expr(body, &env, &func_vars, &mut ctx, name)?;
+            // Infer the return type of the body.
+            //
+            // Structural-type bodies (`'type`) are handled specially: the body
+            // IS the type descriptor; the function is an identity — it returns
+            // its argument unchanged, so the return type equals the param type.
+            let inferred = if let Expr::StructuralType(type_expr) = body {
+                let (ann_param, ann_ret) = typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars);
+                let param_applied = param_ty.apply(&ctx);
+                unify(
+                    &mut ctx,
+                    &param_applied,
+                    &ann_param,
+                    &format!("structural type param of '{name}'"),
+                )?;
+                ann_ret
+            } else {
+                infer_expr(body, &env, &func_vars, &mut ctx, name)?
+            };
 
-            // Apply accumulated substitutions before unifying, so the error
-            // message shows concrete types rather than raw type-variable IDs.
+            // Apply any explicit type annotation.
+            //
+            // `name typeRef: body`        — named type annotation
+            // `name 'typeExpr: body`      — inline structural type annotation
+            if let Some(ann) = annotation {
+                match ann {
+                    Expr::Symbol(type_name) => {
+                        // Named type ref: constrain return type to that type's
+                        // return type.
+                        if let Some((_, ann_ret_ty)) = func_vars.get(type_name.as_str()) {
+                            let ann_ret = ann_ret_ty.apply(&ctx);
+                            let inferred_applied = inferred.apply(&ctx);
+                            unify(
+                                &mut ctx,
+                                &inferred_applied,
+                                &ann_ret,
+                                &format!("type annotation '{type_name}' on '{name}'"),
+                            )?;
+                        } else {
+                            return Err(TypeError {
+                                message: format!(
+                                    "undefined type '{type_name}' used as annotation for '{name}'"
+                                ),
+                            });
+                        }
+                    }
+                    Expr::StructuralType(type_expr) => {
+                        // Inline type annotation: constrain both param and return.
+                        let (ann_param, ann_ret) =
+                            typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars);
+                        let param_applied = param_ty.apply(&ctx);
+                        unify(
+                            &mut ctx,
+                            &param_applied,
+                            &ann_param,
+                            &format!("input type annotation on '{name}'"),
+                        )?;
+                        let inferred_applied = inferred.apply(&ctx);
+                        unify(
+                            &mut ctx,
+                            &inferred_applied,
+                            &ann_ret,
+                            &format!("return type annotation on '{name}'"),
+                        )?;
+                    }
+                    _ => {} // other annotation forms are ignored
+                }
+            }
+
+            // Apply accumulated substitutions before final unification.
             let inferred = inferred.apply(&ctx);
             let ret = ret_ty.apply(&ctx);
             unify(
@@ -189,7 +323,9 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
 // Helper: extract the components of a `(define (name params…) body)` node
 // ---------------------------------------------------------------------------
 
-fn extract_define(expr: &Expr) -> Option<(&str, Vec<&str>, &Expr)> {
+/// Returns `(name, param_names, body, optional_annotation)` for a
+/// `(define (name params…) body)` or `(define (name params…) body annotation)` node.
+fn extract_define(expr: &Expr) -> Option<(&str, Vec<&str>, &Expr, Option<&Expr>)> {
     if let Expr::List(items) = expr
         && items.len() >= 3
         && let Expr::Symbol(kw) = &items[0]
@@ -207,7 +343,8 @@ fn extract_define(expr: &Expr) -> Option<(&str, Vec<&str>, &Expr)> {
                 }
             })
             .collect();
-        Some((name.as_str(), param_names, &items[2]))
+        let annotation = items.get(3);
+        Some((name.as_str(), param_names, &items[2], annotation))
     } else {
         None
     }
@@ -361,9 +498,13 @@ fn infer_expr(
             }),
         },
 
-        Expr::Quote(_) => Err(TypeError {
-            message: "quoted expressions are not supported in compiled code".to_string(),
-        }),
+        // ── Structural type expression `'type` ───────────────────────────
+        // In expression position a structural type evaluates to a type-tag
+        // integer (0 at runtime).  Its primary use is either as the body of a
+        // type-assertion function (`anyFloat: 'f64`) or as a type annotation
+        // on a definition; both cases are handled in `type_check` before this
+        // point.  When it appears as a plain value we give it type `int`.
+        Expr::StructuralType(_) => Ok(ty_int()),
     }
 }
 
@@ -712,6 +853,110 @@ mod tests {
         assert!(
             msg.contains("undefined function"),
             "expected undefined-function error, got: {msg}"
+        );
+    }
+
+    // ── structural types ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_structural_type_def_ok() {
+        // `anyInt: 'i64` — structural type function definition
+        assert!(check("anyInt: 'i64\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_all_primitives_ok() {
+        let src = "
+            anyInt: 'i64
+            anyFloat: 'f64
+            anyBool: 'bool
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_array_ok() {
+        assert!(check("anyIntArray: '[i64]\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_nested_array_ok() {
+        assert!(check("twoDim: '[[i64]]\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_map_ok() {
+        assert!(check("anyMap: '{k1: bool, k2: i64}\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_function_ok() {
+        assert!(check("anyFn: '(i64 | bool)\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_structural_type_wildcard_function_ok() {
+        assert!(check("discard: '(_|_)\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_call_structural_type_function_ok() {
+        // `(anyInt 42)` — calling a structural type function is an identity call
+        let src = "
+            anyInt: 'i64
+            main: (anyInt 42)
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_named_type_annotation_ok() {
+        // `labelUsage anyFloat: 42` — function with named type annotation
+        let src = "
+            anyFloat: 'f64
+            labelUsage anyFloat: 42
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_named_type_annotation_undefined_error() {
+        // Named annotation referencing a non-existent type should be an error
+        let src = "
+            labelUsage unknownType: 42
+            main: 0
+        ";
+        let msg = check_err(src);
+        assert!(
+            msg.contains("undefined type") || msg.contains("unknownType"),
+            "expected undefined-type error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_inline_function_type_annotation_ok() {
+        // `id '(i64 | i64): x` — annotated identity function
+        let src = "
+            id '(i64 | i64): x
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_inline_type_annotation_return_type_mismatch() {
+        // The body returns a string but the annotation says i64 output.
+        // (Strings are `str`, i64 is `int`, so this should be a type error.)
+        let src = r#"
+            f '(i64 | i64): "hello"
+            main: 0
+        "#;
+        let msg = check_err(src);
+        assert!(
+            msg.contains("mismatch"),
+            "expected type mismatch from annotation, got: {msg}"
         );
     }
 }
