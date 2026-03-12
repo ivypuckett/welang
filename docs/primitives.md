@@ -1,5 +1,15 @@
 # Primitives
 
+## Types
+
+- `int` — integer (also used for booleans: 0 is false, non-zero is true)
+- `str` — string literal
+- `tuple(T)` — fixed pair `[a, b]` where both elements are type `T`
+- `map(T)` — map literal `{k: v, …}` where all values are type `T`
+- `α → β` — function from type `α` to type `β`
+
+## Operations
+
 - `add` — adds two integers: `(add [a, b])`
 - `subtract` — subtracts two integers: `(subtract [a, b])`
 - `multiply` — multiplies two integers: `(multiply [a, b])`
