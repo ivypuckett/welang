@@ -14,6 +14,7 @@ pub enum Token {
     Pipe,
     Dot,
     Quote,
+    Star,
     Bool(bool),
     Number(f64),
     Str(String),
@@ -130,6 +131,11 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                 tokens.push((Token::Quote, line));
             }
 
+            '*' => {
+                chars.next();
+                tokens.push((Token::Star, line));
+            }
+
             '"' => {
                 let string_line = line;
                 chars.next();
@@ -202,6 +208,7 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, LexError> {
                         || ch == ':'
                         || ch == '|'
                         || ch == '.'
+                        || ch == '*'
                     {
                         break;
                     }

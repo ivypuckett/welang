@@ -31,7 +31,7 @@
 ///   (i.e. the type of `x` must be consistent), but the values themselves may
 ///   have different types.  The map type is `map(α)` where `α` is a fresh
 ///   unconstrained variable.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use polytype::{Context, Type, TypeScheme};
 
@@ -116,6 +116,11 @@ type GenericBindings = HashMap<String, Ty>;
 /// another generic body (e.g. `'<T i64> y` where `y: '<T _>T`).
 type TypeExprs = HashMap<String, TypeExpr>;
 
+/// Set of names that were declared as nominal types (`name: *typeExpr`).
+/// Nominal types require that any annotated function body calling a function
+/// must call the nominal constructor explicitly.
+type NominalTypes = HashSet<String>;
+
 // ---------------------------------------------------------------------------
 // Built-in type schemes
 // ---------------------------------------------------------------------------
@@ -178,6 +183,8 @@ fn typeexpr_to_scalar(
             }
             typeexpr_to_scalar(body, ctx, func_vars, &extended, type_exprs)
         }
+        // Nominal type: same HM representation as the inner structural type.
+        TypeExpr::Nominal(inner) => typeexpr_to_scalar(inner, ctx, func_vars, generics, type_exprs),
     }
 }
 
@@ -288,24 +295,42 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
     let mut ctx = Ctx::default();
     let mut func_vars: FuncVars = HashMap::new();
 
-    // Collect the original TypeExpr for every structural-type function so that
-    // generic specialization (e.g. `'<T i64> y` where `y: '<T _>T`) can
-    // substitute the outer bindings into the named type's own parameters.
+    // Collect the original TypeExpr for every structural-type or nominal-type
+    // function so that generic specialization can substitute outer bindings
+    // into named type's own parameters.  For nominal types the inner TypeExpr
+    // (without the `*` wrapper) is stored so that referencing them by name
+    // works the same as referencing a structural type.
     let mut type_exprs: TypeExprs = HashMap::new();
+    let mut nominal_types: NominalTypes = HashSet::new();
     for expr in exprs {
-        if let Some((name, _, Expr::StructuralType(te), _)) = extract_define(expr) {
-            type_exprs.insert(name.to_string(), te.clone());
+        if let Some((name, _, body, _)) = extract_define(expr) {
+            match body {
+                Expr::StructuralType(te) => {
+                    type_exprs.insert(name.to_string(), te.clone());
+                }
+                Expr::NominalType(te) => {
+                    // Store the inner TypeExpr (without the `*` wrapper) so
+                    // that name-based specialization works identically.
+                    type_exprs.insert(name.to_string(), te.clone());
+                    nominal_types.insert(name.to_string());
+                }
+                _ => {}
+            }
         }
     }
 
     // --- Pass 1: seed fresh type variables for every function ---------------
     //
-    // For structural-type function bodies (`name: 'type`), we can seed
+    // For structural-type and nominal-type function bodies we can seed
     // concrete types immediately from the TypeExpr instead of fresh variables.
     // This lets call-sites see the exact type constraint from the start.
     for expr in exprs {
         if let Some((name, _params, body, _ann)) = extract_define(expr) {
-            if let Expr::StructuralType(type_expr) = body {
+            let type_expr_opt = match body {
+                Expr::StructuralType(te) | Expr::NominalType(te) => Some(te),
+                _ => None,
+            };
+            if let Some(type_expr) = type_expr_opt {
                 // Use a temporary empty func_vars to convert the TypeExpr
                 // (user-defined type names in it will become fresh variables here;
                 // they are resolved properly in Pass 2 if needed).
@@ -340,28 +365,30 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
 
             // Infer the return type of the body.
             //
-            // Structural-type bodies (`'type`) are handled specially: the body
-            // IS the type descriptor; the function is an identity — it returns
-            // its argument unchanged, so the return type equals the param type.
-            let inferred = if let Expr::StructuralType(type_expr) = body {
-                let (ann_param, ann_ret) = typeexpr_to_param_ret(
-                    type_expr,
-                    &mut ctx,
-                    &func_vars,
-                    &HashMap::new(),
-                    &type_exprs,
-                );
-                let param_applied = param_ty.apply(&ctx);
-                unify(
-                    &mut ctx,
-                    &param_applied,
-                    &ann_param,
-                    &format!("structural type param of '{name}'"),
-                )?;
-                ann_ret
-            } else {
-                infer_expr(body, &env, &func_vars, &mut ctx, name)?
-            };
+            // Structural-type bodies (`'type`) and nominal-type bodies (`*type`)
+            // are handled specially: the body IS the type descriptor; the
+            // function is an identity — it returns its argument unchanged, so
+            // the return type equals the param type.
+            let inferred =
+                if let Expr::StructuralType(type_expr) | Expr::NominalType(type_expr) = body {
+                    let (ann_param, ann_ret) = typeexpr_to_param_ret(
+                        type_expr,
+                        &mut ctx,
+                        &func_vars,
+                        &HashMap::new(),
+                        &type_exprs,
+                    );
+                    let param_applied = param_ty.apply(&ctx);
+                    unify(
+                        &mut ctx,
+                        &param_applied,
+                        &ann_param,
+                        &format!("structural type param of '{name}'"),
+                    )?;
+                    ann_ret
+                } else {
+                    infer_expr(body, &env, &func_vars, &mut ctx, name)?
+                };
 
             // Apply any explicit type annotation.
             //
@@ -388,6 +415,13 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                                     "undefined type '{type_name}' used as annotation for '{name}'"
                                 ),
                             });
+                        }
+                        // Nominal type additional check: when the annotation is a
+                        // nominal type, any call expression in the body must go
+                        // through the nominal constructor.  Bare literals and
+                        // non-call expressions are allowed.
+                        if nominal_types.contains(type_name.as_str()) {
+                            check_nominal_body(body, type_name)?;
                         }
                     }
                     Expr::StructuralType(type_expr) => {
@@ -620,6 +654,41 @@ fn infer_expr(
         // on a definition; both cases are handled in `type_check` before this
         // point.  When it appears as a plain value we give it type `int`.
         Expr::StructuralType(_) => Ok(ty_int()),
+
+        // ── Nominal type expression `*type` ──────────────────────────────
+        // Only valid as the body of a top-level definition (handled above).
+        // If it appears elsewhere (e.g. as the callee of a call) the outer
+        // list-matching code rejects it before we get here.  In the unlikely
+        // event it reaches this branch, treat it as `int` for graceful handling.
+        Expr::NominalType(_) => Ok(ty_int()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Nominal type constructor enforcement
+// ---------------------------------------------------------------------------
+
+/// When a function is annotated with a nominal type `N`, any call expression
+/// in the body must invoke the nominal constructor directly.  Bare literals
+/// (numbers, booleans, strings), symbols, tuples, maps, and conditionals are
+/// left unrestricted so that e.g. `z specialInt: 1` or `z specialInt: x` are
+/// valid.
+///
+/// The rule: if `body` is an `Expr::List` (a parenthesised call), then its
+/// first element must be `Expr::Symbol(nominal_name)`.
+fn check_nominal_body(body: &Expr, nominal_name: &str) -> Result<(), TypeError> {
+    if let Expr::List(items) = body {
+        match items.first() {
+            Some(Expr::Symbol(s)) if s == nominal_name => Ok(()),
+            _ => Err(TypeError {
+                message: format!(
+                    "nominal type '{nominal_name}' requires the body to call the constructor; \
+                     use ({nominal_name} ...) instead"
+                ),
+            }),
+        }
+    } else {
+        Ok(())
     }
 }
 
@@ -1138,6 +1207,132 @@ mod tests {
         let src = "
             genericId: '<T _> (T | T)
             main: (genericId 0)
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    // ── nominal types ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_nominal_type_decl_ok() {
+        assert!(check("specialInt: *i64\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_nominal_type_named_annotation_literal_ok() {
+        // `z specialInt: 1` — annotation with bare literal body is valid.
+        let src = "
+            specialInt: *i64
+            z specialInt: 1
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_type_constructor_call_ok() {
+        // `a: (specialInt 1)` — explicit constructor call is valid anywhere.
+        let src = "
+            specialInt: *i64
+            a: (specialInt 1)
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_generic_ok() {
+        assert!(check("b: *<T _> T\nmain: 0").is_ok());
+    }
+
+    #[test]
+    fn test_nominal_generic_structural_specialization_ok() {
+        // `c: '<T i64> b` — structural annotation specializing nominal generic.
+        let src = "
+            b: *<T _> T
+            c: '<T i64> b
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_generic_nominal_specialization_ok() {
+        // `d: *<T i64> b` — nominal annotation specializing nominal generic.
+        let src = "
+            b: *<T _> T
+            d: *<T i64> b
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_all_success_cases_ok() {
+        // All success cases from the spec in a single program.
+        let src = "
+            specialInt: *i64
+            z specialInt: 1
+            a: (specialInt 1)
+            b: *<T _> T
+            c: '<T i64> b
+            d: *<T i64> b
+            main: (specialInt 0)
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_inline_annotation_parse_error() {
+        // `uncallable *i64: 1` — `*typeExpr` as annotation is a parse error.
+        let result = crate::lisp::parser::parse("uncallable *i64: 1\nmain: 0");
+        assert!(result.is_err(), "expected parse error for `*` annotation");
+    }
+
+    #[test]
+    fn test_nominal_inline_call_type_error() {
+        // `uncallable2: (*i64 1)` — `*typeExpr` inline in call is a type error.
+        let msg = check_err("uncallable2: (*i64 1)\nmain: 0");
+        assert!(
+            msg.contains("cannot call") || msg.contains("NominalType"),
+            "expected cannot-call error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_nominal_annotation_grouped_expr_error() {
+        // `noNominalClaim specialInt: (1)` — grouped expression (List) in body
+        // that does not call the nominal constructor is a type error.
+        let src = "
+            specialInt: *i64
+            noNominalClaim specialInt: (1)
+            main: 0
+        ";
+        let msg = check_err(src);
+        assert!(
+            msg.contains("nominal type") || msg.contains("constructor"),
+            "expected nominal-constructor error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_nominal_annotation_with_constructor_ok() {
+        // `noNominalClaim specialInt: (specialInt 1)` — correct form.
+        let src = "
+            specialInt: *i64
+            noNominalClaim specialInt: (specialInt 1)
+            main: 0
+        ";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn test_nominal_annotation_symbol_body_ok() {
+        // Body is a plain symbol (the implicit parameter `x`) — allowed.
+        let src = "
+            specialInt: *i64
+            passThrough specialInt: x
+            main: 0
         ";
         assert!(check(src).is_ok());
     }

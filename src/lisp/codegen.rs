@@ -243,10 +243,10 @@ fn compile_function(
             }
         }
 
-        // Structural-type functions (`name: 'type`) are identity functions:
+        // Structural-type and nominal-type functions are identity functions:
         // they return their argument `x` unchanged (the type check is
         // compile-time only).
-        let result = if let Expr::StructuralType(_) = body {
+        let result = if let Expr::StructuralType(_) | Expr::NominalType(_) = body {
             if info.is_main {
                 builder.ins().iconst(types::I64, 0)
             } else {
@@ -419,10 +419,10 @@ fn compile_expr(
             other => Err(format!("cannot call {:?} as a function", other)),
         },
 
-        // Structural type expressions (`'i64`, `'[bool]`, …) in value position
-        // compile to the integer 0 — they are compile-time type descriptors with
-        // no runtime payload.
-        Expr::StructuralType(_) => Ok(builder.ins().iconst(types::I64, 0)),
+        // Structural and nominal type expressions in value position compile to
+        // the integer 0 — they are compile-time type descriptors with no
+        // runtime payload.
+        Expr::StructuralType(_) | Expr::NominalType(_) => Ok(builder.ins().iconst(types::I64, 0)),
 
         Expr::Str(_) => {
             Err("string literals are only supported as arguments to 'print'".to_string())
