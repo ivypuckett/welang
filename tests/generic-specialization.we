@@ -1,0 +1,25 @@
+# Generic type specialization test.
+#
+# A generic structural type can be specialized by referencing it inside another
+# generic type expression.  The outer type parameters are matched by name to
+# the referenced type's own parameters and used as specialization arguments.
+#
+# The return value of `main` is 0 on success.
+
+# ── Base generic: identity for any type T ─────────────────────────────────────
+y: '<T _>T
+
+# ── Specialization via body reference: '<T i64> y ────────────────────────────
+# z specializes y with T=i64, so z is an identity that only accepts i64.
+z: '<T i64> y
+
+# ── Specialized generic annotation without ' ─────────────────────────────────
+# `a <T i64>y: 1` — a is annotated with y specialized to T=i64, returns 1.
+a <T i64>y: 1
+
+# ── Named annotation using a specialized type ────────────────────────────────
+# `b z: 3` — b is annotated with z (already i64-specialized), returns 3.
+b z: 3
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+main: 0

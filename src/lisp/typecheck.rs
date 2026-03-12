@@ -111,6 +111,11 @@ type FuncVars = HashMap<String, (Ty, Ty)>;
 /// the concrete `Ty` it was resolved to.
 type GenericBindings = HashMap<String, Ty>;
 
+/// Map from structural-type function name to its original `TypeExpr`.
+/// Used to specialize generic types when they are referenced by name inside
+/// another generic body (e.g. `'<T i64> y` where `y: '<T _>T`).
+type TypeExprs = HashMap<String, TypeExpr>;
+
 // ---------------------------------------------------------------------------
 // Built-in type schemes
 // ---------------------------------------------------------------------------
@@ -132,6 +137,7 @@ fn typeexpr_to_scalar(
     ctx: &mut Ctx,
     func_vars: &FuncVars,
     generics: &GenericBindings,
+    type_exprs: &TypeExprs,
 ) -> Ty {
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
@@ -141,6 +147,10 @@ fn typeexpr_to_scalar(
                 // Generic type parameter takes priority over any global name.
                 if let Some(ty) = generics.get(name.as_str()) {
                     ty.clone()
+                } else if let Some(te) = type_exprs.get(name.as_str()) {
+                    // Named structural type: apply current generic bindings as
+                    // specialization arguments to the type's own parameters.
+                    specialize_scalar(te, ctx, func_vars, generics, type_exprs)
                 } else if let Some((_, ret_ty)) = func_vars.get(name.as_str()) {
                     ret_ty.clone()
                 } else {
@@ -149,20 +159,58 @@ fn typeexpr_to_scalar(
             }
         },
         TypeExpr::Wildcard => ctx.new_variable(),
-        TypeExpr::Array(elem) => ty_tuple(typeexpr_to_scalar(elem, ctx, func_vars, generics)),
+        TypeExpr::Array(elem) => ty_tuple(typeexpr_to_scalar(
+            elem, ctx, func_vars, generics, type_exprs,
+        )),
         TypeExpr::Map(_) => ty_map(ctx.new_variable()),
         // For function types used in scalar context, return the output type.
-        TypeExpr::Function(_, output) => typeexpr_to_scalar(output, ctx, func_vars, generics),
+        TypeExpr::Function(_, output) => {
+            typeexpr_to_scalar(output, ctx, func_vars, generics, type_exprs)
+        }
         // Generic type: resolve each param to its constraint type (or a fresh
         // variable for wildcards), extend the bindings, then convert the body.
         TypeExpr::Generic(params, body) => {
             let mut extended = generics.clone();
             for (name, constraint) in params {
-                let param_ty = typeexpr_to_scalar(constraint, ctx, func_vars, &extended);
+                let param_ty =
+                    typeexpr_to_scalar(constraint, ctx, func_vars, &extended, type_exprs);
                 extended.insert(name.clone(), param_ty);
             }
-            typeexpr_to_scalar(body, ctx, func_vars, &extended)
+            typeexpr_to_scalar(body, ctx, func_vars, &extended, type_exprs)
         }
+    }
+}
+
+/// Specialize a named structural type's `TypeExpr` using the current
+/// `outer_generics` bindings.
+///
+/// When a generic body references another generic type by name (e.g.
+/// `'<T i64> y` where `y: '<T _>T`), the outer type parameters should be
+/// used to instantiate the named type's own parameters (matched by name).
+/// Any of the named type's parameters that do not appear in `outer_generics`
+/// fall back to their own constraint.
+fn specialize_scalar(
+    ty: &TypeExpr,
+    ctx: &mut Ctx,
+    func_vars: &FuncVars,
+    outer_generics: &GenericBindings,
+    type_exprs: &TypeExprs,
+) -> Ty {
+    if let TypeExpr::Generic(params, body) = ty {
+        let mut bindings = GenericBindings::new();
+        for (pname, constraint) in params {
+            if let Some(outer_ty) = outer_generics.get(pname.as_str()) {
+                // Specialise: use the caller's binding for this param.
+                bindings.insert(pname.clone(), outer_ty.clone());
+            } else {
+                // No outer binding: evaluate from the param's own constraint.
+                let t = typeexpr_to_scalar(constraint, ctx, func_vars, outer_generics, type_exprs);
+                bindings.insert(pname.clone(), t);
+            }
+        }
+        typeexpr_to_scalar(body, ctx, func_vars, &bindings, type_exprs)
+    } else {
+        typeexpr_to_scalar(ty, ctx, func_vars, outer_generics, type_exprs)
     }
 }
 
@@ -175,24 +223,26 @@ fn typeexpr_to_param_ret(
     ctx: &mut Ctx,
     func_vars: &FuncVars,
     generics: &GenericBindings,
+    type_exprs: &TypeExprs,
 ) -> (Ty, Ty) {
     match ty {
         TypeExpr::Function(input, output) => {
-            let param = typeexpr_to_scalar(input, ctx, func_vars, generics);
-            let ret = typeexpr_to_scalar(output, ctx, func_vars, generics);
+            let param = typeexpr_to_scalar(input, ctx, func_vars, generics, type_exprs);
+            let ret = typeexpr_to_scalar(output, ctx, func_vars, generics, type_exprs);
             (param, ret)
         }
         // Generic type: resolve params, then decompose the body.
         TypeExpr::Generic(params, body) => {
             let mut extended = generics.clone();
             for (name, constraint) in params {
-                let param_ty = typeexpr_to_scalar(constraint, ctx, func_vars, &extended);
+                let param_ty =
+                    typeexpr_to_scalar(constraint, ctx, func_vars, &extended, type_exprs);
                 extended.insert(name.clone(), param_ty);
             }
-            typeexpr_to_param_ret(body, ctx, func_vars, &extended)
+            typeexpr_to_param_ret(body, ctx, func_vars, &extended, type_exprs)
         }
         other => {
-            let scalar = typeexpr_to_scalar(other, ctx, func_vars, generics);
+            let scalar = typeexpr_to_scalar(other, ctx, func_vars, generics, type_exprs);
             (scalar.clone(), scalar)
         }
     }
@@ -238,6 +288,16 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
     let mut ctx = Ctx::default();
     let mut func_vars: FuncVars = HashMap::new();
 
+    // Collect the original TypeExpr for every structural-type function so that
+    // generic specialization (e.g. `'<T i64> y` where `y: '<T _>T`) can
+    // substitute the outer bindings into the named type's own parameters.
+    let mut type_exprs: TypeExprs = HashMap::new();
+    for expr in exprs {
+        if let Some((name, _, Expr::StructuralType(te), _)) = extract_define(expr) {
+            type_exprs.insert(name.to_string(), te.clone());
+        }
+    }
+
     // --- Pass 1: seed fresh type variables for every function ---------------
     //
     // For structural-type function bodies (`name: 'type`), we can seed
@@ -250,8 +310,13 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                 // (user-defined type names in it will become fresh variables here;
                 // they are resolved properly in Pass 2 if needed).
                 let empty: FuncVars = HashMap::new();
-                let (param_ty, ret_ty) =
-                    typeexpr_to_param_ret(type_expr, &mut ctx, &empty, &HashMap::new());
+                let (param_ty, ret_ty) = typeexpr_to_param_ret(
+                    type_expr,
+                    &mut ctx,
+                    &empty,
+                    &HashMap::new(),
+                    &type_exprs,
+                );
                 func_vars.insert(name.to_string(), (param_ty, ret_ty));
             } else {
                 let param_ty = ctx.new_variable();
@@ -279,8 +344,13 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
             // IS the type descriptor; the function is an identity — it returns
             // its argument unchanged, so the return type equals the param type.
             let inferred = if let Expr::StructuralType(type_expr) = body {
-                let (ann_param, ann_ret) =
-                    typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars, &HashMap::new());
+                let (ann_param, ann_ret) = typeexpr_to_param_ret(
+                    type_expr,
+                    &mut ctx,
+                    &func_vars,
+                    &HashMap::new(),
+                    &type_exprs,
+                );
                 let param_applied = param_ty.apply(&ctx);
                 unify(
                     &mut ctx,
@@ -297,6 +367,7 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
             //
             // `name typeRef: body`        — named type annotation
             // `name 'typeExpr: body`      — inline structural type annotation
+            // `name <T C>typeRef: body`   — specialized generic annotation
             if let Some(ann) = annotation {
                 match ann {
                     Expr::Symbol(type_name) => {
@@ -320,9 +391,15 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
                         }
                     }
                     Expr::StructuralType(type_expr) => {
-                        // Inline type annotation: constrain both param and return.
-                        let (ann_param, ann_ret) =
-                            typeexpr_to_param_ret(type_expr, &mut ctx, &func_vars, &HashMap::new());
+                        // Inline or specialized-generic type annotation:
+                        // constrain both param and return.
+                        let (ann_param, ann_ret) = typeexpr_to_param_ret(
+                            type_expr,
+                            &mut ctx,
+                            &func_vars,
+                            &HashMap::new(),
+                            &type_exprs,
+                        );
                         let param_applied = param_ty.apply(&ctx);
                         unify(
                             &mut ctx,
