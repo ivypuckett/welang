@@ -171,11 +171,12 @@ fn line_at(tokens: &[(Token, usize)], pos: usize) -> usize {
 
 /// True when the tokens at `pos` unambiguously begin a new function definition.
 ///
-/// Three forms are recognised:
+/// Four forms are recognised:
 ///
-/// 1. `name: body`              — plain definition
-/// 2. `name typeRef: body`      — named type annotation
-/// 3. `name 'typeExpr: body`    — inline structural type annotation
+/// 1. `name: body`                   — plain definition
+/// 2. `name typeRef: body`           — named type annotation
+/// 3. `name 'typeExpr: body`         — inline structural type annotation
+/// 4. `name <T C, …> typeRef: body`  — specialized generic type annotation
 fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
     if !matches!(&tokens[pos].0, Token::Symbol(_)) {
         return false;
@@ -195,6 +196,27 @@ fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
     if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::Quote {
         return true;
     }
+    // Case 4: `name <T C, …> typeRef: body`  (specialized generic annotation)
+    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::LAngle {
+        let mut i = pos + 2; // first token inside `<`
+        let mut depth: usize = 1;
+        while i < tokens.len() && depth > 0 {
+            match &tokens[i].0 {
+                Token::LAngle => depth += 1,
+                Token::RAngle => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        // `i` now points to the first token after the matching `>`.
+        if depth == 0
+            && i + 1 < tokens.len()
+            && matches!(&tokens[i].0, Token::Symbol(_))
+            && tokens[i + 1].0 == Token::Colon
+        {
+            return true;
+        }
+    }
     false
 }
 
@@ -212,11 +234,12 @@ fn is_plain_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
 
 /// Parse a source string into a list of top-level function definitions.
 ///
-/// Only function definitions are allowed at the top level.  Three forms:
+/// Only function definitions are allowed at the top level.  Four forms:
 ///
-/// - `name: body`              — function with implicit parameter `x`
-/// - `name typeRef: body`      — function annotated with a named type
-/// - `name 'typeExpr: body`    — function annotated with an inline structural type
+/// - `name: body`                   — function with implicit parameter `x`
+/// - `name typeRef: body`           — function annotated with a named type
+/// - `name 'typeExpr: body`         — function annotated with an inline structural type
+/// - `name <T C, …> typeRef: body`  — function annotated with a specialized generic type
 ///
 /// If the body does not reference `x`, the function behaves as a
 /// zero-argument function. The body is exactly one expression (monadic).
@@ -266,6 +289,18 @@ pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
         } else if pos < tokens.len() && tokens[pos].0 == Token::Quote {
             // `name 'typeExpr: body` — inline structural type annotation.
             pos += 1; // consume `'`
+            let ty = parse_type_expr(&tokens, &mut pos)?;
+            if pos >= tokens.len() || tokens[pos].0 != Token::Colon {
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidFuncDef,
+                    line: def_line,
+                });
+            }
+            pos += 1; // consume `:`
+            Some(Expr::StructuralType(ty))
+        } else if pos < tokens.len() && tokens[pos].0 == Token::LAngle {
+            // `name <T C, …> typeRef: body` — specialized generic annotation.
+            // `parse_type_expr` starting from `<` produces a `Generic(…, Named(typeRef))`.
             let ty = parse_type_expr(&tokens, &mut pos)?;
             if pos >= tokens.len() || tokens[pos].0 != Token::Colon {
                 return Err(ParseError {
