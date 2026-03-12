@@ -10,6 +10,7 @@ anyBool: 'bool
 # ── Compound structural types ────────────────────────────────────────────────
 anyIntArray: '[i64]
 anyMap: '{k1: bool, k2: i64}
+anyNestedMap: '{k1: {k1: bool}}
 anyTwoDimensionalArray: '[[i64]]
 
 # ── Function structural types ────────────────────────────────────────────────
