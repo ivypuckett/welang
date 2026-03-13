@@ -18,6 +18,10 @@ pub enum TypeExpr {
     /// Each entry in the `Vec` is `(param_name, constraint)`.  The constraint
     /// is itself a `TypeExpr`; a `Wildcard` constraint means unconstrained.
     Generic(Vec<(String, TypeExpr)>, Box<TypeExpr>),
+    /// A nominal type marker: `*baseType`.  Only valid as the body of a
+    /// top-level definition.  Nominal types create a named, opaque brand that
+    /// is distinct from their base structural type.
+    Nominal(Box<TypeExpr>),
 }
 
 /// An expression in the AST.
@@ -29,6 +33,9 @@ pub enum Expr {
     Symbol(String),
     /// A structural type expression created by the `'` marker: `'i64`, `'[bool]`, etc.
     StructuralType(TypeExpr),
+    /// A nominal type declaration created by the `*` marker: `*i64`, `*<T _> T`, etc.
+    /// Only valid as the direct body of a top-level function definition.
+    NominalType(TypeExpr),
     /// A parenthesised call or special form: `(f arg)`.
     List(Vec<Expr>),
     /// A tuple literal: `[e1, e2, ...]`.
@@ -517,6 +524,13 @@ fn parse_type_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<TypeExp
             Ok(TypeExpr::Generic(params, Box::new(body)))
         }
 
+        // Nominal type: `*baseType`
+        Token::Star => {
+            *pos += 1; // consume `*`
+            let inner = parse_type_expr(tokens, pos)?;
+            Ok(TypeExpr::Nominal(Box::new(inner)))
+        }
+
         _ => Err(ParseError {
             kind: ParseErrorKind::InvalidTypeExpr,
             line: tok_line,
@@ -532,6 +546,7 @@ fn can_start_expr(token: &Token) -> bool {
             | Token::LBracket
             | Token::LBrace
             | Token::Quote
+            | Token::Star
             | Token::Number(_)
             | Token::Bool(_)
             | Token::Str(_)
@@ -859,6 +874,18 @@ fn parse_primary(tokens: &[(Token, usize)], pos: &mut usize) -> Result<Expr, Par
             Ok(Expr::StructuralType(ty))
         }
 
+        Token::Star => {
+            *pos += 1; // consume `*`
+            if *pos >= tokens.len() {
+                return Err(ParseError {
+                    kind: ParseErrorKind::MissingQuoteTarget,
+                    line: tok_line,
+                });
+            }
+            let ty = parse_type_expr(tokens, pos)?;
+            Ok(Expr::NominalType(ty))
+        }
+
         Token::Number(n) => {
             *pos += 1;
             Ok(Expr::Number(n))
@@ -992,9 +1019,9 @@ mod tests {
 
     #[test]
     fn test_one_arg_func() {
-        // `double: (* [2, x])` — implicit param `x`
+        // `double: (multiply [2, x])` — implicit param `x`
         assert_eq!(
-            parse("double: (* [2, x])").unwrap(),
+            parse("double: (multiply [2, x])").unwrap(),
             vec![Expr::List(vec![
                 Expr::Symbol("define".to_string()),
                 Expr::List(vec![
@@ -1002,7 +1029,7 @@ mod tests {
                     Expr::Symbol("x".to_string()),
                 ]),
                 Expr::List(vec![
-                    Expr::Symbol("*".to_string()),
+                    Expr::Symbol("multiply".to_string()),
                     Expr::Tuple(vec![Expr::Number(2.0), Expr::Symbol("x".to_string())]),
                 ]),
             ])]
@@ -1011,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_multiple_func_defs() {
-        let result = parse("foo: 1\nbar: (* [2, x])").unwrap();
+        let result = parse("foo: 1\nbar: (multiply [2, x])").unwrap();
         assert_eq!(result.len(), 2);
         // foo has implicit x but doesn't use it
         assert_eq!(
@@ -1035,7 +1062,7 @@ mod tests {
                     Expr::Symbol("x".to_string()),
                 ]),
                 Expr::List(vec![
-                    Expr::Symbol("*".to_string()),
+                    Expr::Symbol("multiply".to_string()),
                     Expr::Tuple(vec![Expr::Number(2.0), Expr::Symbol("x".to_string())]),
                 ]),
             ])

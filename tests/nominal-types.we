@@ -1,0 +1,31 @@
+# Nominal types test file.
+# Nominal types use `*` to declare a named, opaque brand.
+# The return value of `main` is 0 on success.
+
+# ── Basic nominal type declaration ───────────────────────────────────────────
+# `specialInt: *i64` — declares a nominal type whose underlying type is i64.
+# At runtime the constructor is an identity function.
+specialInt: *i64
+
+# ── Named-annotation on a regular function ───────────────────────────────────
+# `z specialInt: 1` — z is annotated with specialInt; body is a bare literal.
+z specialInt: 1
+
+# ── Explicit nominal constructor call ────────────────────────────────────────
+# `(specialInt 1)` wraps the integer 1 as a specialInt value.
+a: (specialInt 1)
+
+# ── Nominal generic type ──────────────────────────────────────────────────────
+b: *<T _> T
+
+# ── Structural annotation referencing a nominal generic ──────────────────────
+# `c: '<T i64> b` — c is a structural type that specializes b with T=i64.
+c: '<T i64> b
+
+# ── Nominal annotation referencing a nominal generic ─────────────────────────
+# `d: *<T i64> b` — d is a nominal type that specializes b with T=i64.
+d: *<T i64> b
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+# (specialInt 0) is the identity on 0, so main returns 0.
+main: (specialInt 0)
