@@ -1,0 +1,57 @@
+# Tests that functions can receive and return all types:
+# arrays ([T]), maps ({k: T}), strings (str), and floats (f64/bool).
+
+# ── Functions under test ─────────────────────────────────────────────────────
+
+# Takes an array of bool, returns the element at index 3.
+array '([bool] | bool): (get [x, 3])
+
+# Takes a map {k: [i64]}, returns element 0 of the array at field k.
+map '({k: [i64]} | i64): (get [x.k, 0])
+
+# Takes any value, prints it.
+s: (print x)
+
+# Takes any value, compares it to 3f14 (truncated to 3 at runtime).
+f: (equals [x, 3f14])
+
+# ── Producers ────────────────────────────────────────────────────────────────
+
+# Returns an array [1, 2, 3, 4].
+arr2 '(_ | [i64]): ([1, 2, 3, 4])
+
+# Returns a map {k: [true]}.
+m '(_ | {k: [i64]}): ({k: [true]})
+
+# Returns the string "hi".
+sprod: ("hi")
+
+# Returns 3f14 (truncated to 3 as i64).
+fprod: (3f14)
+
+# ── Consumers ────────────────────────────────────────────────────────────────
+
+# array(arr2): get element 3 of [1,2,3,4] → 4
+a: (array arr2)
+
+# map(m): get element 0 of m.k = [true] = [1] → 1
+mresult: (map m)
+
+# s(sprod): print "hi", returns 0
+sresult: (s sprod)
+
+# f(fprod): equals [3, 3] → 1
+fresult: (f fprod)
+
+# ── Assertions ───────────────────────────────────────────────────────────────
+# Returns 0 on success, 1 on any failure.
+
+main:
+  {(equal [a, 4]):
+    {(equal [mresult, 1]):
+      {(equal [sresult, 0]):
+        {(equal [fresult, 1]): 0,
+         _: 1},
+       _: 1},
+     _: 1},
+   _: 1}

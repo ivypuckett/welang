@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -12,6 +12,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
 
 use super::parser::Expr;
+use super::typecheck::TypeInfo;
 
 type CompileError = String;
 
@@ -25,10 +26,13 @@ struct FuncInfo {
 struct Builtins {
     /// `printf(const char*, i64) -> i32` — used by `(print n)` for integers.
     printf_id: FuncId,
-    /// `puts(const char*) -> i32` — used by `(print "s")` for string literals.
+    /// `puts(const char*) -> i32` — used by `(print "s")` for string literals
+    /// and for `(print x)` when `x` is a string-typed variable.
     puts_id: FuncId,
-    /// `malloc(size: i64) -> i64` — used by map literals to allocate storage.
+    /// `malloc(size: i64) -> i64` — used by map/array literals to allocate storage.
     malloc_id: FuncId,
+    /// `strcmp(const char*, const char*) -> i32` — used by runtime map-field lookup.
+    strcmp_id: FuncId,
     /// `"%ld\n"` format string for integer printing.
     fmt_int_id: DataId,
     /// Counter for generating unique names for string-literal data objects.
@@ -94,7 +98,7 @@ fn make_sig(
 ///   `(print "s")`               — print string literal s followed by newline, returns 0
 ///   `(f arg)`                   — call one-arg function
 ///   `(f)`                       — call zero-arg function
-pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
+pub fn compile(exprs: &[Expr], type_info: &TypeInfo) -> Result<Vec<u8>, CompileError> {
     let mut module = create_module()?;
 
     // Declare printf(const char*, i64) -> i32 for integer printing.
@@ -120,13 +124,24 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
             .map_err(|e| e.to_string())?
     };
 
-    // Declare malloc(size: i64) -> i64 for map heap allocation.
+    // Declare malloc(size: i64) -> i64 for map/array heap allocation.
     let malloc_id = {
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // byte count
         sig.returns.push(AbiParam::new(types::I64)); // pointer
         module
             .declare_function("malloc", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Declare strcmp(const char*, const char*) -> i32 for runtime map-field lookup.
+    let strcmp_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // s1
+        sig.params.push(AbiParam::new(types::I64)); // s2
+        sig.returns.push(AbiParam::new(types::I32));
+        module
+            .declare_function("strcmp", Linkage::Import, &sig)
             .map_err(|e| e.to_string())?
     };
 
@@ -145,6 +160,7 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
         printf_id,
         puts_id,
         malloc_id,
+        strcmp_id,
         fmt_int_id,
         next_str_id: Cell::new(0),
     };
@@ -182,7 +198,14 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, CompileError> {
         {
             // items[2] is always the body; items[3] (if present) is the
             // type annotation, which is compile-time only — skip it here.
-            compile_function(&mut module, &registry, sig_items, &items[2], &builtins)?;
+            compile_function(
+                &mut module,
+                &registry,
+                sig_items,
+                &items[2],
+                &builtins,
+                &type_info.str_params,
+            )?;
         }
     }
 
@@ -196,6 +219,7 @@ fn compile_function(
     sig_items: &[Expr],
     body: &Expr,
     builtins: &Builtins,
+    str_params: &HashSet<String>,
 ) -> Result<(), CompileError> {
     let name = match sig_items.first() {
         Some(Expr::Symbol(s)) => s.as_str(),
@@ -243,6 +267,13 @@ fn compile_function(
             }
         }
 
+        // Determine which local variable names hold string values.  Start with
+        // the implicit parameter `x` if this function's parameter is str-typed.
+        let mut str_locals: HashSet<String> = HashSet::new();
+        if str_params.contains(name) {
+            str_locals.insert("x".to_string());
+        }
+
         // Structural-type and nominal-type functions are identity functions:
         // they return their argument `x` unchanged (the type check is
         // compile-time only).
@@ -264,6 +295,7 @@ fn compile_function(
                 &mut locals,
                 &mut next_var,
                 builtins,
+                &str_locals,
             )?
         };
 
@@ -293,6 +325,7 @@ fn compile_expr(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     match expr {
         Expr::Number(n) => Ok(builder.ins().iconst(types::I64, *n as i64)),
@@ -302,6 +335,21 @@ fn compile_expr(
         Expr::Symbol(name) => {
             if let Some(&var) = locals.get(name.as_str()) {
                 Ok(builder.use_var(var))
+            } else if let Some(info) = registry.get(name.as_str()) {
+                // Symbol refers to a user-defined function: call it with a
+                // dummy argument (or no args if main).  The callee ignores `x`.
+                let func_ref = module.declare_func_in_func(info.id, builder.func);
+                let call = if info.arity == 0 || info.is_main {
+                    builder.ins().call(func_ref, &[])
+                } else {
+                    let dummy = builder.ins().iconst(types::I64, 0);
+                    builder.ins().call(func_ref, &[dummy])
+                };
+                match builder.inst_results(call).first().copied() {
+                    None => Ok(builder.ins().iconst(types::I64, 0)),
+                    Some(r) if info.is_main => Ok(builder.ins().sextend(types::I64, r)),
+                    Some(r) => Ok(r),
+                }
             } else {
                 Err(format!("undefined variable: {}", name))
             }
@@ -329,6 +377,11 @@ fn compile_expr(
             builder.def_var(new_var, x_val);
             let mut inner_locals = locals.clone();
             inner_locals.insert(name.clone(), new_var);
+            // If the original `x` was string-typed, the renamed alias is too.
+            let mut inner_str = str_locals.clone();
+            if str_locals.contains("x") {
+                inner_str.insert(name.clone());
+            }
             compile_expr(
                 builder,
                 module,
@@ -337,20 +390,23 @@ fn compile_expr(
                 &mut inner_locals,
                 next_var,
                 builtins,
+                &inner_str,
             )
         }
 
-        // Tuple at expression level is only valid as an argument to an operator.
-        Expr::Tuple(_) => Err(
-            "tuple literal [...] can only appear as an argument to a built-in operator".to_string(),
+        // Tuple literal `[e1, e2, …]` in value position: heap-allocate an
+        // array with layout `[n_elements, elem0, elem1, …]` (all i64).
+        // Returns an i64 pointer to the allocated block.
+        Expr::Tuple(elems) => compile_array(
+            builder, module, registry, elems, locals, next_var, builtins, str_locals,
         ),
 
         Expr::Map(entries) => compile_map(
-            builder, module, registry, entries, locals, next_var, builtins,
+            builder, module, registry, entries, locals, next_var, builtins, str_locals,
         ),
 
         Expr::Cond(entries) => compile_cond(
-            builder, module, registry, entries, locals, next_var, builtins,
+            builder, module, registry, entries, locals, next_var, builtins, str_locals,
         ),
 
         Expr::List(items) if items.is_empty() => {
@@ -359,7 +415,7 @@ fn compile_expr(
 
         // Single-element list `(expr)` is grouping — evaluates the inner expression.
         Expr::List(items) if items.len() == 1 => compile_expr(
-            builder, module, registry, &items[0], locals, next_var, builtins,
+            builder, module, registry, &items[0], locals, next_var, builtins, str_locals,
         ),
 
         Expr::List(items) => match &items[0] {
@@ -368,7 +424,7 @@ fn compile_expr(
             {
                 let (lhs, rhs) = unpack_binary_tuple(op, &items[1..])?;
                 compile_arith(
-                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins,
+                    builder, module, registry, op, lhs, rhs, locals, next_var, builtins, str_locals,
                 )
             }
             Expr::Symbol(op)
@@ -386,6 +442,7 @@ fn compile_expr(
                 let (lhs, rhs) = unpack_binary_tuple(canonical, &items[1..])?;
                 compile_cmp(
                     builder, module, registry, canonical, lhs, rhs, locals, next_var, builtins,
+                    str_locals,
                 )
             }
             Expr::Symbol(kw) if kw == "print" => compile_print(
@@ -396,6 +453,7 @@ fn compile_expr(
                 locals,
                 next_var,
                 builtins,
+                str_locals,
             ),
             Expr::Symbol(kw) if kw == "get" => compile_get(
                 builder,
@@ -405,6 +463,7 @@ fn compile_expr(
                 locals,
                 next_var,
                 builtins,
+                str_locals,
             ),
             Expr::Symbol(name) => compile_call(
                 builder,
@@ -415,6 +474,7 @@ fn compile_expr(
                 locals,
                 next_var,
                 builtins,
+                str_locals,
             ),
             other => Err(format!("cannot call {:?} as a function", other)),
         },
@@ -424,9 +484,9 @@ fn compile_expr(
         // runtime payload.
         Expr::StructuralType(_) | Expr::NominalType(_) => Ok(builder.ins().iconst(types::I64, 0)),
 
-        Expr::Str(_) => {
-            Err("string literals are only supported as arguments to 'print'".to_string())
-        }
+        // String literals in value position: intern in the data section and
+        // return an i64 pointer, exactly as in map values and print args.
+        Expr::Str(s) => intern_string(module, builder, builtins, s, "__we_str_"),
     }
 }
 
@@ -456,9 +516,14 @@ fn compile_arith(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
-    let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
-    let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
+    let lv = compile_expr(
+        builder, module, registry, lhs, locals, next_var, builtins, str_locals,
+    )?;
+    let rv = compile_expr(
+        builder, module, registry, rhs, locals, next_var, builtins, str_locals,
+    )?;
     Ok(match op {
         "add" => builder.ins().iadd(lv, rv),
         "subtract" => builder.ins().isub(lv, rv),
@@ -479,9 +544,14 @@ fn compile_cmp(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
-    let lv = compile_expr(builder, module, registry, lhs, locals, next_var, builtins)?;
-    let rv = compile_expr(builder, module, registry, rhs, locals, next_var, builtins)?;
+    let lv = compile_expr(
+        builder, module, registry, lhs, locals, next_var, builtins, str_locals,
+    )?;
+    let rv = compile_expr(
+        builder, module, registry, rhs, locals, next_var, builtins, str_locals,
+    )?;
     let cc = match op {
         "equal" => IntCC::Equal,
         "lessThan" => IntCC::SignedLessThan,
@@ -508,6 +578,7 @@ fn compile_cond(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     let merge_block = builder.create_block();
     builder.append_block_param(merge_block, types::I64);
@@ -515,8 +586,9 @@ fn compile_cond(
     for (cond_opt, val_expr) in entries {
         match cond_opt {
             Some(cond) => {
-                let cond_val =
-                    compile_expr(builder, module, registry, cond, locals, next_var, builtins)?;
+                let cond_val = compile_expr(
+                    builder, module, registry, cond, locals, next_var, builtins, str_locals,
+                )?;
                 let zero = builder.ins().iconst(types::I64, 0);
                 let flag = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
 
@@ -527,7 +599,7 @@ fn compile_cond(
                 builder.switch_to_block(val_block);
                 builder.seal_block(val_block);
                 let val = compile_expr(
-                    builder, module, registry, val_expr, locals, next_var, builtins,
+                    builder, module, registry, val_expr, locals, next_var, builtins, str_locals,
                 )?;
                 builder.ins().jump(merge_block, &[val]);
 
@@ -537,7 +609,7 @@ fn compile_cond(
             None => {
                 // Wildcard arm — always taken (must be last).
                 let val = compile_expr(
-                    builder, module, registry, val_expr, locals, next_var, builtins,
+                    builder, module, registry, val_expr, locals, next_var, builtins, str_locals,
                 )?;
                 builder.ins().jump(merge_block, &[val]);
             }
@@ -564,40 +636,42 @@ fn compile_print(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     if args.len() != 1 {
         return Err(format!("'print' expects 1 argument, got {}", args.len()));
     }
 
-    // Special-case string literals: store in data section and call puts.
-    if let Expr::Str(s) = &args[0] {
-        let label = format!("__we_str_{}", builtins.next_str_id.get());
-        builtins.next_str_id.set(builtins.next_str_id.get() + 1);
-
-        let mut desc = DataDescription::new();
-        let mut bytes = s.as_bytes().to_vec();
-        bytes.push(b'\0');
-        desc.define(bytes.into_boxed_slice());
-
-        let str_id = module
-            .declare_data(&label, Linkage::Local, false, false)
-            .map_err(|e| e.to_string())?;
-        module
-            .define_data(str_id, &desc)
-            .map_err(|e| e.to_string())?;
-
-        let gv = module.declare_data_in_func(str_id, builder.func);
-        let str_ptr = builder.ins().global_value(types::I64, gv);
-
+    // Helper: call puts(ptr) and return 0.
+    let call_puts = |builder: &mut FunctionBuilder,
+                     module: &mut ObjectModule,
+                     builtins: &Builtins,
+                     ptr: Value|
+     -> Result<Value, CompileError> {
         let puts_ref = module.declare_func_in_func(builtins.puts_id, builder.func);
-        builder.ins().call(puts_ref, &[str_ptr]);
+        builder.ins().call(puts_ref, &[ptr]);
+        Ok(builder.ins().iconst(types::I64, 0))
+    };
 
-        return Ok(builder.ins().iconst(types::I64, 0));
+    // String literal: intern in data section and call puts.
+    if let Expr::Str(s) = &args[0] {
+        let ptr = intern_string(module, builder, builtins, s, "__we_str_")?;
+        return call_puts(builder, module, builtins, ptr);
+    }
+
+    // String-typed variable: the runtime value is already a pointer — call puts.
+    if let Expr::Symbol(name) = &args[0]
+        && str_locals.contains(name.as_str())
+    {
+        let val = compile_expr(
+            builder, module, registry, &args[0], locals, next_var, builtins, str_locals,
+        )?;
+        return call_puts(builder, module, builtins, val);
     }
 
     // General case: compile the expression and print it as an integer.
     let val = compile_expr(
-        builder, module, registry, &args[0], locals, next_var, builtins,
+        builder, module, registry, &args[0], locals, next_var, builtins, str_locals,
     )?;
 
     let gv = module.declare_data_in_func(builtins.fmt_int_id, builder.func);
@@ -619,6 +693,7 @@ fn compile_call(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     let info = registry
         .get(name)
@@ -635,7 +710,11 @@ fn compile_call(
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .map(|a| compile_expr(builder, module, registry, a, locals, next_var, builtins))
+        .map(|a| {
+            compile_expr(
+                builder, module, registry, a, locals, next_var, builtins, str_locals,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let func_ref = module.declare_func_in_func(info.id, builder.func);
@@ -693,6 +772,7 @@ fn compile_map(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     let n = entries.len();
     let size = i64::try_from((1 + 2 * n) * 8).map_err(|_| "map literal has too many entries")?;
@@ -719,14 +799,10 @@ fn compile_map(
             .ins()
             .store(MemFlags::new(), key_ptr, map_ptr, key_off);
 
-        // Compile value — string literals become data-section pointers.
-        let val = if let Expr::Str(s) = val_expr {
-            intern_string(module, builder, builtins, s, "__we_str_")?
-        } else {
-            compile_expr(
-                builder, module, registry, val_expr, locals, next_var, builtins,
-            )?
-        };
+        // Compile value via compile_expr (handles strings, arrays, etc.).
+        let val = compile_expr(
+            builder, module, registry, val_expr, locals, next_var, builtins, str_locals,
+        )?;
         let val_off =
             i32::try_from((2 + 2 * i) * 8).map_err(|_| "map literal has too many entries")?;
         builder.ins().store(MemFlags::new(), val, map_ptr, val_off);
@@ -735,14 +811,20 @@ fn compile_map(
     Ok(map_ptr)
 }
 
-/// Compile `(get [map, key])`.
+/// Compile `(get [collection, key])`.
 ///
-/// `map` must be a map literal whose keys are known at compile time.
-/// `key` must be a symbol or string literal naming an existing field.
+/// Two modes depending on the key type:
 ///
-/// The key's position in the literal is resolved at compile time, and a
-/// single direct load is emitted at the statically-known offset — no runtime
-/// scan or `strcmp` needed.
+/// * **Integer key** (`Expr::Number`) — array/tuple indexing.  The collection
+///   expression is compiled to an array pointer with layout
+///   `[n_elements, elem0, elem1, …]`; the element at the given index is
+///   loaded at offset `(1 + index) * 8`.
+///
+/// * **Symbol/string key** — map field lookup.
+///   - If the map expression is a *literal* `{…}`, the field offset is
+///     resolved at compile time (no runtime scan needed).
+///   - Otherwise the field is found at runtime by walking the map with
+///     `strcmp` comparisons.
 #[allow(clippy::too_many_arguments)]
 fn compile_get(
     builder: &mut FunctionBuilder,
@@ -752,53 +834,202 @@ fn compile_get(
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
     builtins: &Builtins,
+    str_locals: &HashSet<String>,
 ) -> Result<Value, CompileError> {
     let (map_expr, key_expr) = match args {
         [Expr::Tuple(elems)] if elems.len() == 2 => (&elems[0], &elems[1]),
         _ => return Err("'get' requires a 2-element tuple argument [map, key]".to_string()),
     };
 
+    // ── Integer key: array indexing ─────────────────────────────────────────
+    if let Expr::Number(idx) = key_expr {
+        let arr_ptr = compile_expr(
+            builder, module, registry, map_expr, locals, next_var, builtins, str_locals,
+        )?;
+        let byte_off =
+            i32::try_from((1 + *idx as i64) * 8).map_err(|_| "'get': array index overflow")?;
+        return Ok(builder
+            .ins()
+            .load(types::I64, MemFlags::new(), arr_ptr, byte_off));
+    }
+
+    // ── Symbol/string key: map field lookup ─────────────────────────────────
     let key_name: String = match key_expr {
-        Expr::Symbol(s) => s.clone(),
-        Expr::Str(s) => s.clone(),
-        _ => return Err("'get' key must be a symbol or string literal".to_string()),
+        Expr::Symbol(s) | Expr::Str(s) => s.clone(),
+        _ => return Err("'get' key must be a symbol, string literal, or integer".to_string()),
     };
 
-    // Resolve the map's keys at compile time — only map literals are accepted.
-    let keys: Vec<&str> =
-        match map_expr {
-            Expr::Map(entries) => entries.iter().map(|(k, _)| k.as_str()).collect(),
-            _ => return Err(
-                "'get' map argument must be a map literal so its keys are known at compile time"
-                    .to_string(),
-            ),
-        };
+    // Fast path: map literal — resolve key position at compile time.
+    if let Expr::Map(entries) = map_expr {
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        let key_index = keys.iter().position(|&k| k == key_name).ok_or_else(|| {
+            let available = if keys.is_empty() {
+                "(none — map is empty)".to_string()
+            } else {
+                keys.join(", ")
+            };
+            format!(
+                "'get' key '{}' not found in map; available keys: {}",
+                key_name, available
+            )
+        })?;
+        let map_ptr = compile_expr(
+            builder, module, registry, map_expr, locals, next_var, builtins, str_locals,
+        )?;
+        let val_offset =
+            i32::try_from((2 + 2 * key_index) * 8).map_err(|_| "'get': key index overflow")?;
+        return Ok(builder
+            .ins()
+            .load(types::I64, MemFlags::new(), map_ptr, val_offset));
+    }
 
-    // Validate that the requested key exists.
-    let key_index = keys.iter().position(|&k| k == key_name).ok_or_else(|| {
-        let available = if keys.is_empty() {
-            "(none — map is empty)".to_string()
-        } else {
-            keys.join(", ")
-        };
-        format!(
-            "'get' key '{}' not found in map; available keys: {}",
-            key_name, available
-        )
-    })?;
-
-    // Compile the map pointer.
+    // Slow path: variable map — runtime linear scan using strcmp.
     let map_ptr = compile_expr(
-        builder, module, registry, map_expr, locals, next_var, builtins,
+        builder, module, registry, map_expr, locals, next_var, builtins, str_locals,
     )?;
+    let key_ptr = intern_string(module, builder, builtins, &key_name, "__we_mk_")?;
+    compile_get_runtime(builder, module, builtins, map_ptr, key_ptr)
+}
 
-    // Emit a direct load at the statically-known value offset: (2 + 2*index) * 8.
-    // Map layout: [n_fields, key0, val0, key1, val1, ...]  (each slot is 8 bytes)
-    let val_offset =
-        i32::try_from((2 + 2 * key_index) * 8).map_err(|_| "'get': key index overflow")?;
-    Ok(builder
+/// Emit a runtime linear scan of a heap-allocated map to find `key_ptr`.
+///
+/// Map layout: `[n_fields, key0_ptr, val0, key1_ptr, val1, …]` (all i64).
+/// Returns the value associated with the first matching key, or 0 if not found.
+fn compile_get_runtime(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    builtins: &Builtins,
+    map_ptr: Value,
+    key_ptr: Value,
+) -> Result<Value, CompileError> {
+    // Load n_fields from offset 0.
+    let n_fields = builder.ins().load(types::I64, MemFlags::new(), map_ptr, 0);
+
+    // Create all basic blocks up front.
+    let loop_header = builder.create_block();
+    let loop_body = builder.create_block();
+    let found_block = builder.create_block();
+    let not_found_block = builder.create_block();
+    let merge_block = builder.create_block();
+
+    // Block parameters.
+    builder.append_block_param(loop_header, types::I64); // i (loop index)
+    builder.append_block_param(found_block, types::I64); // pointer to value slot
+    builder.append_block_param(merge_block, types::I64); // result value
+
+    // Entry → loop_header(0).
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(loop_header, &[zero]);
+
+    // ── loop_header(i) ─────────────────────────────────────────────────────
+    // Don't seal yet — loop_body will add a back-edge.
+    builder.switch_to_block(loop_header);
+    let i = builder.block_params(loop_header)[0];
+    let done = builder
         .ins()
-        .load(types::I64, MemFlags::new(), map_ptr, val_offset))
+        .icmp(IntCC::SignedGreaterThanOrEqual, i, n_fields);
+    builder
+        .ins()
+        .brif(done, not_found_block, &[], loop_body, &[]);
+    // Seal blocks whose only predecessor is loop_header.
+    builder.seal_block(loop_body);
+    builder.seal_block(not_found_block);
+
+    // ── loop_body ──────────────────────────────────────────────────────────
+    builder.switch_to_block(loop_body);
+    let one = builder.ins().iconst(types::I64, 1);
+    let two = builder.ins().iconst(types::I64, 2);
+    let eight = builder.ins().iconst(types::I64, 8);
+
+    // key_slot_index = 1 + 2*i
+    let i2 = builder.ins().imul(i, two);
+    let key_slot = builder.ins().iadd(i2, one);
+    let key_byte_off = builder.ins().imul(key_slot, eight);
+    let stored_key_addr = builder.ins().iadd(map_ptr, key_byte_off);
+    let stored_key = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), stored_key_addr, 0);
+
+    let strcmp_ref = module.declare_func_in_func(builtins.strcmp_id, builder.func);
+    let cmp_call = builder.ins().call(strcmp_ref, &[stored_key, key_ptr]);
+    let cmp_i32 = builder.inst_results(cmp_call)[0];
+    let is_equal = builder.ins().icmp_imm(IntCC::Equal, cmp_i32, 0);
+
+    // val_slot_ptr = map_ptr + (2 + 2*i) * 8
+    let val_slot = builder.ins().iadd(key_slot, one); // key_slot + 1 = 2 + 2*i
+    let val_byte_off = builder.ins().imul(val_slot, eight);
+    let val_slot_ptr = builder.ins().iadd(map_ptr, val_byte_off);
+
+    let next_i = builder.ins().iadd(i, one);
+    builder.ins().brif(
+        is_equal,
+        found_block,
+        &[val_slot_ptr],
+        loop_header,
+        &[next_i],
+    );
+
+    // Seal loop_header now (all predecessors: entry + loop_body are done).
+    builder.seal_block(loop_header);
+    // Seal found_block (only predecessor: loop_body).
+    builder.seal_block(found_block);
+
+    // ── not_found_block ────────────────────────────────────────────────────
+    builder.switch_to_block(not_found_block);
+    let zero2 = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(merge_block, &[zero2]);
+
+    // ── found_block(val_slot_ptr) ──────────────────────────────────────────
+    builder.switch_to_block(found_block);
+    let vptr = builder.block_params(found_block)[0];
+    let val = builder.ins().load(types::I64, MemFlags::new(), vptr, 0);
+    builder.ins().jump(merge_block, &[val]);
+
+    // ── merge_block(result) ────────────────────────────────────────────────
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
+}
+
+/// Compile a tuple/array literal `[e1, e2, …]` into a heap-allocated array.
+///
+/// Layout: `[n_elements, elem0, elem1, …]` (all i64, 8 bytes each).
+/// Returns an i64 pointer to the allocated block.
+#[allow(clippy::too_many_arguments)]
+fn compile_array(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    registry: &HashMap<String, FuncInfo>,
+    elems: &[Expr],
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+    builtins: &Builtins,
+    str_locals: &HashSet<String>,
+) -> Result<Value, CompileError> {
+    let n = elems.len();
+    let size = i64::try_from((1 + n) * 8).map_err(|_| "array literal has too many elements")?;
+
+    let size_val = builder.ins().iconst(types::I64, size);
+    let malloc_ref = module.declare_func_in_func(builtins.malloc_id, builder.func);
+    let malloc_call = builder.ins().call(malloc_ref, &[size_val]);
+    let arr_ptr = builder.inst_results(malloc_call)[0];
+
+    // Store n_elements at offset 0.
+    let n_val = builder
+        .ins()
+        .iconst(types::I64, i64::try_from(n).map_err(|_| "array too large")?);
+    builder.ins().store(MemFlags::new(), n_val, arr_ptr, 0);
+
+    // Store each element.
+    for (i, elem) in elems.iter().enumerate() {
+        let val = compile_expr(
+            builder, module, registry, elem, locals, next_var, builtins, str_locals,
+        )?;
+        let off = i32::try_from((1 + i) * 8).map_err(|_| "array literal has too many elements")?;
+        builder.ins().store(MemFlags::new(), val, arr_ptr, off);
+    }
+
+    Ok(arr_ptr)
 }
 
 #[cfg(test)]
@@ -807,8 +1038,10 @@ mod tests {
     use crate::lisp::parser::parse;
 
     fn compile_src(src: &str) -> Result<Vec<u8>, CompileError> {
+        use crate::lisp::typecheck::type_check;
         let exprs = parse(src).map_err(|e| format!("{:?}", e))?;
-        compile(&exprs)
+        let type_info = type_check(&exprs).unwrap_or_default();
+        compile(&exprs, &type_info)
     }
 
     // ---- rename scope isolation --------------------------------------------------
@@ -862,13 +1095,6 @@ mod tests {
             err.contains("x, y"),
             "error should list available keys; got: {err}"
         );
-    }
-
-    #[test]
-    fn test_get_non_literal_map_is_compile_error() {
-        // The map argument is a local variable — shape is unknown at compile time.
-        let err = compile_src("f: (get [x, key])").unwrap_err();
-        assert!(err.contains("map literal"), "unexpected error: {err}");
     }
 
     #[test]

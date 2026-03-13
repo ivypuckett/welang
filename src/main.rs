@@ -27,12 +27,12 @@ fn main() {
         process::exit(1);
     });
 
-    lisp::typecheck::type_check(&exprs).unwrap_or_else(|e| {
+    let type_info = lisp::typecheck::type_check(&exprs).unwrap_or_else(|e| {
         eprintln!("we: type error: {}", e);
         process::exit(1);
     });
 
-    let obj_bytes = lisp::codegen::compile(&exprs).unwrap_or_else(|e| {
+    let obj_bytes = lisp::codegen::compile(&exprs, &type_info).unwrap_or_else(|e| {
         eprintln!("we: compile error: {}", e);
         process::exit(1);
     });

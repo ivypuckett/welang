@@ -38,6 +38,19 @@ use polytype::{Context, Type, TypeScheme};
 use super::parser::{Expr, TypeExpr};
 
 // ---------------------------------------------------------------------------
+// Public type information produced by the type checker
+// ---------------------------------------------------------------------------
+
+/// Information extracted during type checking that the code generator needs.
+#[derive(Debug, Default)]
+pub struct TypeInfo {
+    /// Function names whose implicit parameter `x` has type `str`.
+    pub str_params: HashSet<String>,
+    /// Function names whose return type is `str`.
+    pub str_returns: HashSet<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Type aliases
 // ---------------------------------------------------------------------------
 
@@ -291,7 +304,7 @@ fn builtin_scheme(name: &str) -> Option<Scheme> {
 ///    return position so that mutually-recursive calls can be resolved.
 /// 2. **Infer**: walk each function body, accumulate unification constraints,
 ///    and ensure the inferred return type matches the seeded return variable.
-pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
+pub fn type_check(exprs: &[Expr]) -> Result<TypeInfo, TypeError> {
     let mut ctx = Ctx::default();
     let mut func_vars: FuncVars = HashMap::new();
 
@@ -465,7 +478,17 @@ pub fn type_check(exprs: &[Expr]) -> Result<(), TypeError> {
         }
     }
 
-    Ok(())
+    // Build and return type information needed by the code generator.
+    let mut type_info = TypeInfo::default();
+    for (name, (param_ty, ret_ty)) in &func_vars {
+        if param_ty.apply(&ctx) == ty_str() {
+            type_info.str_params.insert(name.clone());
+        }
+        if ret_ty.apply(&ctx) == ty_str() {
+            type_info.str_returns.insert(name.clone());
+        }
+    }
+    Ok(type_info)
 }
 
 // ---------------------------------------------------------------------------
@@ -518,9 +541,20 @@ fn infer_expr(
         Expr::Str(_) => Ok(ty_str()),
 
         // ── Variable reference ───────────────────────────────────────────
-        Expr::Symbol(name) => env.get(name.as_str()).cloned().ok_or_else(|| TypeError {
-            message: format!("undefined variable '{name}' in function '{func_name}'"),
-        }),
+        // First look in the local variable environment; if not found, check
+        // whether the symbol names a user-defined function and treat it as a
+        // zero-argument call, returning that function's return type.
+        Expr::Symbol(name) => {
+            if let Some(ty) = env.get(name.as_str()) {
+                Ok(ty.clone())
+            } else if let Some((_param_ty, ret_ty)) = func_vars.get(name.as_str()) {
+                Ok(ret_ty.apply(ctx))
+            } else {
+                Err(TypeError {
+                    message: format!("undefined variable '{name}' in function '{func_name}'"),
+                })
+            }
+        }
 
         // ── Tuple `[a, b, …]` ───────────────────────────────────────────
         // Every element must share the same type; the tuple type carries
@@ -763,15 +797,17 @@ fn infer_print(
     match &args[0] {
         // String literal: accepted without further constraint.
         Expr::Str(_) => Ok(ty_int()),
-        // Any other expression: must be int.
+        // Any other expression: accept str or int; reject map/array.
         other => {
             let arg_ty = infer_expr(other, env, func_vars, ctx, func_name)?.apply(ctx);
-            unify(
-                ctx,
-                &arg_ty,
-                &ty_int(),
-                &format!("argument of 'print' in function '{func_name}'"),
-            )?;
+            // Reject compound types that cannot meaningfully be printed.
+            if matches!(&arg_ty, Ty::Constructed(n, _) if *n == "map" || *n == "tuple") {
+                return Err(TypeError {
+                    message: format!(
+                        "type mismatch in argument of 'print' in function '{func_name}'"
+                    ),
+                });
+            }
             Ok(ty_int())
         }
     }
@@ -793,7 +829,7 @@ fn infer_get(
     ctx: &mut Ctx,
     func_name: &str,
 ) -> Result<Ty, TypeError> {
-    let (map_expr, _key_expr) = match args {
+    let (map_expr, key_expr) = match args {
         [Expr::Tuple(elems)] if elems.len() == 2 => (&elems[0], &elems[1]),
         _ => {
             return Err(TypeError {
@@ -806,14 +842,26 @@ fn infer_get(
 
     // Introduce a fresh type variable for the value type T.
     let val_ty = ctx.new_variable();
-    let expected = ty_map(val_ty.clone());
 
-    unify(
-        ctx,
-        &map_ty,
-        &expected,
-        &format!("'get' map argument in function '{func_name}'"),
-    )?;
+    // A numeric key signals array/tuple indexing; any other key signals map
+    // field lookup.  The collection type is unified accordingly.
+    if matches!(key_expr, Expr::Number(_)) {
+        let expected = ty_tuple(val_ty.clone());
+        unify(
+            ctx,
+            &map_ty,
+            &expected,
+            &format!("'get' array argument in function '{func_name}'"),
+        )?;
+    } else {
+        let expected = ty_map(val_ty.clone());
+        unify(
+            ctx,
+            &map_ty,
+            &expected,
+            &format!("'get' map argument in function '{func_name}'"),
+        )?;
+    }
 
     Ok(val_ty.apply(ctx))
 }
@@ -877,7 +925,7 @@ mod tests {
 
     fn check(src: &str) -> Result<(), TypeError> {
         let exprs = parse(src).expect("parse should succeed");
-        type_check(&exprs)
+        type_check(&exprs).map(|_| ())
     }
 
     fn check_err(src: &str) -> String {
