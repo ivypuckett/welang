@@ -23,3 +23,7 @@
 /generics
 generic-specialization
 /nominal-types
+/primitive-bool
+/primitive-float
+/primitive-int
+/primitive-string
