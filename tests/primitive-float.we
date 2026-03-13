@@ -1,0 +1,11 @@
+# Tests that float literals can be accepted by a function and returned.
+# Floats use the `<int>f<frac>` syntax and are truncated to integers at compile
+# time: 3f14 -> 3, 0f9 -> 0, -2f7 -> -2.
+identity: x
+
+main:
+  {(equal [(identity 3f14), 3]):
+    {(equal [(identity 0f9), 0]):
+      {(equal [(identity -2f7), -2]): 0, _: 1},
+    _: 1},
+  _: 1}

@@ -1,0 +1,7 @@
+# Tests that string literals can be accepted as arguments and that the return
+# value (0 as int) can itself be accepted and returned.
+# `(print "s")` accepts the string literal and returns 0.
+main:
+  {(equal [(print "hello"), 0]):
+    {(equal [(print "world"), 0]): 0, _: 1},
+  _: 1}
