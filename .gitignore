@@ -27,3 +27,5 @@ generic-specialization
 /primitive-float
 /primitive-int
 /primitive-string
+/complex-tuple
+/complex-map

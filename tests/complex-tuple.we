@@ -1,0 +1,12 @@
+# Tests that tuple arguments can contain arbitrary sub-expressions, including
+# the results of user-defined functions.  Tuples are the argument syntax for
+# multi-argument built-in operators — they are not standalone values.
+double: (multiply [2, x])
+negate: (subtract [0, x])
+
+main:
+  {(equal [(add [(double 3), (double 4)]), 14]):
+    {(equal [(multiply [(double 3), (negate 2)]), -12]):
+      {(equal [(add [(negate 5), (negate 3)]), -8]): 0, _: 1},
+    _: 1},
+  _: 1}
