@@ -1,0 +1,10 @@
+# Tests that integer literals can be accepted by a function and returned unchanged.
+# Covers: positive integers, zero, and negative integers.
+identity: x
+
+main:
+  {(equal [(identity 42), 42]):
+    {(equal [(identity 0), 0]):
+      {(equal [(identity -7), -7]): 0, _: 1},
+    _: 1},
+  _: 1}

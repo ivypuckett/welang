@@ -23,3 +23,11 @@
 /generics
 generic-specialization
 /nominal-types
+/primitive-bool
+/primitive-float
+/primitive-int
+/primitive-string
+/complex-tuple
+/complex-map
+/t
+/ts
