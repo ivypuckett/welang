@@ -518,9 +518,19 @@ fn infer_expr(
         Expr::Str(_) => Ok(ty_str()),
 
         // ── Variable reference ───────────────────────────────────────────
-        Expr::Symbol(name) => env.get(name.as_str()).cloned().ok_or_else(|| TypeError {
-            message: format!("undefined variable '{name}' in function '{func_name}'"),
-        }),
+        // Local variable first; fall back to top-level function names, which
+        // are first-class values represented as integer function pointers.
+        Expr::Symbol(name) => {
+            if let Some(ty) = env.get(name.as_str()) {
+                Ok(ty.clone())
+            } else if func_vars.contains_key(name.as_str()) {
+                Ok(ty_int())
+            } else {
+                Err(TypeError {
+                    message: format!("undefined variable '{name}' in function '{func_name}'"),
+                })
+            }
+        }
 
         // ── Tuple `[a, b, …]` ───────────────────────────────────────────
         // Every element must share the same type; the tuple type carries
@@ -836,34 +846,53 @@ fn infer_call(
     ctx: &mut Ctx,
     func_name: &str,
 ) -> Result<Ty, TypeError> {
-    let (param_ty, ret_ty) = func_vars.get(name).cloned().ok_or_else(|| TypeError {
-        message: format!("undefined function '{name}' (called from '{func_name}')"),
-    })?;
+    // Direct call: the name refers to a known top-level function.
+    if let Some((param_ty, ret_ty)) = func_vars.get(name).cloned() {
+        let arg_ty = match args {
+            [] => {
+                // Zero-argument call: the callee ignores its parameter.  Use a
+                // fresh variable so we don't over-constrain the callee.
+                ctx.new_variable()
+            }
+            [arg] => infer_expr(arg, env, func_vars, ctx, func_name)?,
+            _ => {
+                return Err(TypeError {
+                    message: format!("function '{name}' takes 1 argument but got {}", args.len()),
+                });
+            }
+        };
 
-    let arg_ty = match args {
-        [] => {
-            // Zero-argument call: the callee ignores its parameter.  Use a
-            // fresh variable so we don't over-constrain the callee.
-            ctx.new_variable()
-        }
-        [arg] => infer_expr(arg, env, func_vars, ctx, func_name)?,
-        _ => {
+        let arg_applied = arg_ty.apply(ctx);
+        let param_applied = param_ty.apply(ctx);
+        unify(
+            ctx,
+            &arg_applied,
+            &param_applied,
+            &format!("argument passed to '{name}' from '{func_name}'"),
+        )?;
+
+        return Ok(ret_ty.apply(ctx));
+    }
+
+    // Indirect call: the name is a local variable holding a function pointer.
+    // All user-defined functions are `int -> int` at runtime.
+    if env.contains_key(name) {
+        if args.len() != 1 {
             return Err(TypeError {
-                message: format!("function '{name}' takes 1 argument but got {}", args.len()),
+                message: format!(
+                    "indirect call via '{name}' requires exactly 1 argument, got {}",
+                    args.len()
+                ),
             });
         }
-    };
+        // Infer the argument to catch any inner type errors.
+        infer_expr(&args[0], env, func_vars, ctx, func_name)?;
+        return Ok(ty_int());
+    }
 
-    let arg_applied = arg_ty.apply(ctx);
-    let param_applied = param_ty.apply(ctx);
-    unify(
-        ctx,
-        &arg_applied,
-        &param_applied,
-        &format!("argument passed to '{name}' from '{func_name}'"),
-    )?;
-
-    Ok(ret_ty.apply(ctx))
+    Err(TypeError {
+        message: format!("undefined function '{name}' (called from '{func_name}')"),
+    })
 }
 
 // ---------------------------------------------------------------------------

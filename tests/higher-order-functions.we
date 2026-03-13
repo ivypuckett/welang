@@ -1,0 +1,38 @@
+# Tests for higher-order functions and currying.
+#
+# Higher-order functions: functions that accept other functions as arguments.
+#
+# Currying: in welang every function already takes exactly one argument, so
+# a "curried" helper is simply a function with one operand pre-bound.
+# e.g. `add5` is `add` with 5 partially applied.
+
+double: (multiply [2, x])
+triple: (multiply [3, x])
+
+# Curried adders — partial application of add.
+add5: (add [x, 5])
+add10: (add [x, 10])
+
+# Higher-order function: apply the function f (passed as x) to the value 3.
+apply-to-three: (x 3)
+
+# Higher-order function: apply f to a value and then double the result.
+apply-then-double: (f: (double (f 4)))
+
+main:
+  # Higher-order: pass double and triple as first-class values.
+  {(equal [(apply-to-three double), 6]):
+    {(equal [(apply-to-three triple), 9]):
+      # Currying: pass curried helpers as first-class values.
+      {(equal [(apply-to-three add5), 8]):
+        {(equal [(apply-to-three add10), 13]):
+          # Compose a HOF with a curried function.
+          {(equal [(apply-then-double double), 16]):
+            {(equal [(apply-then-double add5), 18]):
+              0,
+            _: 1},
+          _: 1},
+        _: 1},
+      _: 1},
+    _: 1},
+  _: 1}

@@ -302,6 +302,10 @@ fn compile_expr(
         Expr::Symbol(name) => {
             if let Some(&var) = locals.get(name.as_str()) {
                 Ok(builder.use_var(var))
+            } else if let Some(info) = registry.get(name.as_str()) {
+                // First-class function: resolve to a function pointer (i64).
+                let func_ref = module.declare_func_in_func(info.id, builder.func);
+                Ok(builder.ins().func_addr(types::I64, func_ref))
             } else {
                 Err(format!("undefined variable: {}", name))
             }
@@ -620,33 +624,59 @@ fn compile_call(
     next_var: &mut usize,
     builtins: &Builtins,
 ) -> Result<Value, CompileError> {
-    let info = registry
-        .get(name)
-        .ok_or_else(|| format!("undefined function: {}", name))?;
+    // Direct call: the name refers to a known top-level function.
+    if let Some(info) = registry.get(name) {
+        if args.len() != info.arity {
+            return Err(format!(
+                "function '{}' expects {} argument(s), got {}",
+                name,
+                info.arity,
+                args.len()
+            ));
+        }
 
-    if args.len() != info.arity {
-        return Err(format!(
-            "function '{}' expects {} argument(s), got {}",
-            name,
-            info.arity,
-            args.len()
-        ));
+        let arg_vals: Vec<Value> = args
+            .iter()
+            .map(|a| compile_expr(builder, module, registry, a, locals, next_var, builtins))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let func_ref = module.declare_func_in_func(info.id, builder.func);
+        let call = builder.ins().call(func_ref, &arg_vals);
+        let first_result = builder.inst_results(call).first().copied();
+
+        return match first_result {
+            None => Ok(builder.ins().iconst(types::I64, 0)),
+            Some(r) if info.is_main => Ok(builder.ins().sextend(types::I64, r)),
+            Some(r) => Ok(r),
+        };
     }
 
-    let arg_vals: Vec<Value> = args
-        .iter()
-        .map(|a| compile_expr(builder, module, registry, a, locals, next_var, builtins))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Indirect call: the name is a local variable holding a function pointer.
+    // All user-defined functions take exactly one i64 argument and return i64.
+    if let Some(&var) = locals.get(name) {
+        if args.len() != 1 {
+            return Err(format!(
+                "indirect call via '{}' requires exactly 1 argument, got {}",
+                name,
+                args.len()
+            ));
+        }
 
-    let func_ref = module.declare_func_in_func(info.id, builder.func);
-    let call = builder.ins().call(func_ref, &arg_vals);
-    let first_result = builder.inst_results(call).first().copied();
+        let func_ptr = builder.use_var(var);
+        let arg_val = compile_expr(
+            builder, module, registry, &args[0], locals, next_var, builtins,
+        )?;
 
-    match first_result {
-        None => Ok(builder.ins().iconst(types::I64, 0)),
-        Some(r) if info.is_main => Ok(builder.ins().sextend(types::I64, r)),
-        Some(r) => Ok(r),
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = builder.import_signature(sig);
+
+        let call = builder.ins().call_indirect(sig_ref, func_ptr, &[arg_val]);
+        return Ok(builder.inst_results(call)[0]);
     }
+
+    Err(format!("undefined function: {}", name))
 }
 
 /// Helper: intern a string in the object file's data section and return a
