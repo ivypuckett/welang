@@ -1,7 +1,13 @@
-# Tests that string literals can be accepted as arguments and that the return
-# value (0 as int) can itself be accepted and returned.
-# `(print "s")` accepts the string literal and returns 0.
+# Tests strings through user-defined functions.
+# String values cannot be used as user-defined function parameters: the type
+# checker only accepts string literals directly inside `print`, not str-typed
+# variables.  The closest possible test is a user-defined function whose body
+# embeds a string literal; the function's parameter (x) is an int that is
+# ignored, and the return value (0 from print) is what flows back out.
+say-hello: (print "hello")
+say-world: (print "world")
+
 main:
-  {(equal [(print "hello"), 0]):
-    {(equal [(print "world"), 0]): 0, _: 1},
+  {(equal [(say-hello 0), 0]):
+    {(equal [(say-world 0), 0]): 0, _: 1},
   _: 1}
