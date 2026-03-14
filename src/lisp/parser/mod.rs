@@ -4,147 +4,72 @@ pub mod types;
 
 pub use types::{Expr, ParseError, ParseErrorKind, TypeExpr};
 
+use chumsky::Stream;
+use chumsky::prelude::*;
+
 use crate::lisp::lexer::{Token, tokenize};
-use expr_parser::parse_expr;
+use expr_parser::expr_parser;
+use type_parser::type_parser;
 
-pub(crate) fn line_at(tokens: &[(Token, usize)], pos: usize) -> usize {
-    if pos < tokens.len() {
-        tokens[pos].1
-    } else {
-        tokens.last().map(|(_, l)| *l).unwrap_or(1)
-    }
-}
+fn func_def_parser() -> impl Parser<Token, Expr, Error = ParseError> {
+    let name = select! { Token::Symbol(s) => s };
 
-fn is_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
-    if !matches!(&tokens[pos].0, Token::Symbol(_)) {
-        return false;
-    }
-    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::Colon {
-        return true;
-    }
-    if pos + 2 < tokens.len()
-        && matches!(&tokens[pos + 1].0, Token::Symbol(s) if s != "_")
-        && tokens[pos + 2].0 == Token::Colon
-    {
-        return true;
-    }
-    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::Quote {
-        return true;
-    }
-    if pos + 1 < tokens.len() && tokens[pos + 1].0 == Token::LAngle {
-        let mut i = pos + 2;
-        let mut depth: usize = 1;
-        while i < tokens.len() && depth > 0 {
-            match &tokens[i].0 {
-                Token::LAngle => depth += 1,
-                Token::RAngle => depth -= 1,
-                _ => {}
+    // annotation + colon, all in one unit
+    let no_ann = just(Token::Colon).to(None::<Expr>);
+
+    let structural_ann = just(Token::Quote)
+        .ignore_then(type_parser())
+        .then_ignore(just(Token::Colon).labelled(ParseErrorKind::InvalidFuncDef))
+        .map(|ty| Some(Expr::StructuralType(ty)));
+
+    // Named annotation: sym followed by colon (e.g. `foo anyFloat: body`)
+    let named_ann = select! { Token::Symbol(s) if s != "_" => s }
+        .then_ignore(just(Token::Colon))
+        .map(|s| Some(Expr::Symbol(s)));
+
+    // Generic annotation: must start with < (e.g. `f <T _> (T|T): body`)
+    let generic_ann = just(Token::LAngle)
+        .rewind()
+        .ignore_then(type_parser())
+        .then_ignore(just(Token::Colon).labelled(ParseErrorKind::InvalidFuncDef))
+        .map(|ty| Some(Expr::StructuralType(ty)));
+
+    let ann_colon = choice((no_ann, structural_ann, named_ann, generic_ann))
+        .labelled(ParseErrorKind::InvalidFuncDef);
+
+    name.then(ann_colon)
+        .then(expr_parser())
+        .map(|((name, ann), body)| {
+            let sig = Expr::List(vec![Expr::Symbol(name), Expr::Symbol("x".to_string())]);
+            let mut items = vec![Expr::Symbol("define".to_string()), sig, body];
+            if let Some(a) = ann {
+                items.push(a);
             }
-            i += 1;
-        }
-        if depth == 0
-            && i + 1 < tokens.len()
-            && matches!(&tokens[i].0, Token::Symbol(_))
-            && tokens[i + 1].0 == Token::Colon
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_plain_func_def_start(tokens: &[(Token, usize)], pos: usize) -> bool {
-    matches!(&tokens[pos].0, Token::Symbol(_))
-        && pos + 1 < tokens.len()
-        && tokens[pos + 1].0 == Token::Colon
+            Expr::List(items)
+        })
 }
 
 pub fn parse(input: &str) -> Result<Vec<Expr>, ParseError> {
     let tokens = tokenize(input)?;
-    let mut pos = 0;
-    let mut exprs = Vec::new();
 
-    while pos < tokens.len() {
-        if !is_func_def_start(&tokens, pos) {
-            return Err(ParseError {
-                kind: ParseErrorKind::UnexpectedTopLevel,
-                line: tokens[pos].1,
-            });
-        }
+    let eoi_line = tokens.last().map(|(_, l)| *l).unwrap_or(1);
+    let stream = Stream::from_iter(
+        eoi_line..eoi_line + 1,
+        tokens
+            .iter()
+            .map(|(tok, line)| (tok.clone(), *line..*line + 1)),
+    );
 
-        let name = match &tokens[pos].0 {
-            Token::Symbol(s) => s.clone(),
-            _ => unreachable!(),
-        };
-        let def_line = tokens[pos].1;
-        pos += 1;
-
-        let annotation: Option<Expr> = if pos < tokens.len() && tokens[pos].0 == Token::Colon {
-            pos += 1;
-            None
-        } else if pos + 1 < tokens.len()
-            && matches!(&tokens[pos].0, Token::Symbol(_))
-            && tokens[pos + 1].0 == Token::Colon
-        {
-            let type_name = match tokens[pos].0.clone() {
-                Token::Symbol(s) => s,
-                _ => unreachable!(),
-            };
-            pos += 2;
-            Some(Expr::Symbol(type_name))
-        } else if pos < tokens.len() && tokens[pos].0 == Token::Quote {
-            pos += 1;
-            let ty = type_parser::parse_type_expr(&tokens, &mut pos)?;
-            if pos >= tokens.len() || tokens[pos].0 != Token::Colon {
-                return Err(ParseError {
-                    kind: ParseErrorKind::InvalidFuncDef,
-                    line: def_line,
-                });
-            }
-            pos += 1;
-            Some(Expr::StructuralType(ty))
-        } else if pos < tokens.len() && tokens[pos].0 == Token::LAngle {
-            let ty = type_parser::parse_type_expr(&tokens, &mut pos)?;
-            if pos >= tokens.len() || tokens[pos].0 != Token::Colon {
-                return Err(ParseError {
-                    kind: ParseErrorKind::InvalidFuncDef,
-                    line: def_line,
-                });
-            }
-            pos += 1;
-            Some(Expr::StructuralType(ty))
-        } else {
-            return Err(ParseError {
+    func_def_parser()
+        .repeated()
+        .then_ignore(end().labelled(ParseErrorKind::UnexpectedTopLevel))
+        .parse(stream)
+        .map_err(|errors| {
+            errors.into_iter().next().unwrap_or(ParseError {
                 kind: ParseErrorKind::InvalidFuncDef,
-                line: def_line,
-            });
-        };
-
-        if pos >= tokens.len() || is_plain_func_def_start(&tokens, pos) {
-            return Err(ParseError {
-                kind: ParseErrorKind::InvalidFuncDef,
-                line: def_line,
-            });
-        }
-        let body = parse_expr(&tokens, &mut pos)?;
-
-        if pos < tokens.len() && !is_func_def_start(&tokens, pos) {
-            return Err(ParseError {
-                kind: ParseErrorKind::UnexpectedTopLevel,
-                line: tokens[pos].1,
-            });
-        }
-
-        let mut sig = vec![Expr::Symbol(name)];
-        sig.push(Expr::Symbol("x".to_string()));
-        let mut items = vec![Expr::Symbol("define".to_string()), Expr::List(sig), body];
-        if let Some(ann) = annotation {
-            items.push(ann);
-        }
-        exprs.push(Expr::List(items));
-    }
-
-    Ok(exprs)
+                line: eoi_line,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -264,7 +189,7 @@ mod tests {
     fn test_missing_body_before_next_def() {
         assert_eq!(
             parse("foo:\nbar: 1").unwrap_err().kind,
-            ParseErrorKind::InvalidFuncDef
+            ParseErrorKind::UnexpectedTopLevel
         );
     }
 

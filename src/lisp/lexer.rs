@@ -24,7 +24,7 @@ pub enum Token {
 }
 
 /// The kind of error that occurred during lexing.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LexErrorKind {
     UnterminatedString,
 }
@@ -38,7 +38,7 @@ impl std::fmt::Display for LexErrorKind {
 }
 
 /// An error that occurred during lexing, with a 1-indexed line number.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct LexError {
     pub kind: LexErrorKind,
     pub line: usize,
