@@ -43,6 +43,19 @@ cargo build  # Build the project
 cargo test   # Run the tests
 ```
 
+## Comments
+
+Use minimal comments — code only, no explanations.
+
+## File size limit
+
+Keep files under **400 lines total** (roughly 200 lines of code and 200 lines of tests). When a file exceeds this limit:
+
+- Break it into its own module with multiple focused files, or
+- Refactor the code to be more concise
+
+Do not leave files over 400 lines — split or refactor before committing.
+
 ## Before pushing
 
 Always run these and fix any issues before committing/pushing:
