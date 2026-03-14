@@ -1,142 +1,67 @@
+use chumsky::prelude::*;
+
 use crate::lisp::lexer::Token;
 use crate::lisp::parser::types::{ParseError, ParseErrorKind, TypeExpr};
 
-pub fn parse_type_expr(tokens: &[(Token, usize)], pos: &mut usize) -> Result<TypeExpr, ParseError> {
-    if *pos >= tokens.len() {
-        return Err(ParseError {
-            kind: ParseErrorKind::MissingQuoteTarget,
-            line: super::line_at(tokens, *pos),
-        });
-    }
-    let tok_line = tokens[*pos].1;
-    match tokens[*pos].0.clone() {
-        Token::Symbol(s) if s == "_" => {
-            *pos += 1;
-            Ok(TypeExpr::Wildcard)
-        }
-        Token::Symbol(s) => {
-            *pos += 1;
-            Ok(TypeExpr::Named(s))
-        }
-        Token::LBracket => {
-            *pos += 1;
-            let inner = parse_type_expr(tokens, pos)?;
-            if *pos >= tokens.len() || tokens[*pos].0 != Token::RBracket {
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnmatchedOpenBracket,
-                    line: tok_line,
-                });
-            }
-            *pos += 1;
-            Ok(TypeExpr::Array(Box::new(inner)))
-        }
-        Token::LBrace => {
-            *pos += 1;
-            let mut entries: Vec<(String, TypeExpr)> = Vec::new();
-            loop {
-                if *pos >= tokens.len() {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnmatchedOpenBrace,
-                        line: tok_line,
-                    });
-                }
-                if tokens[*pos].0 == Token::RBrace {
-                    *pos += 1;
-                    break;
-                }
-                let key = match tokens[*pos].0.clone() {
-                    Token::Symbol(s) => s,
-                    _ => {
-                        return Err(ParseError {
-                            kind: ParseErrorKind::InvalidMapEntry,
-                            line: tokens[*pos].1,
-                        });
-                    }
-                };
-                *pos += 1;
-                if *pos >= tokens.len() || tokens[*pos].0 != Token::Colon {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::InvalidMapEntry,
-                        line: super::line_at(tokens, *pos),
-                    });
-                }
-                *pos += 1;
-                let val_ty = parse_type_expr(tokens, pos)?;
-                entries.push((key, val_ty));
-                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
-                    *pos += 1;
-                }
-            }
-            Ok(TypeExpr::Map(entries))
-        }
-        Token::LParen => {
-            *pos += 1;
-            let input_ty = parse_type_expr(tokens, pos)?;
-            if *pos < tokens.len() && tokens[*pos].0 == Token::Pipe {
-                *pos += 1;
-                let output_ty = parse_type_expr(tokens, pos)?;
-                if *pos >= tokens.len() || tokens[*pos].0 != Token::RParen {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnmatchedOpenParen,
-                        line: tok_line,
-                    });
-                }
-                *pos += 1;
-                Ok(TypeExpr::Function(Box::new(input_ty), Box::new(output_ty)))
-            } else {
-                if *pos >= tokens.len() || tokens[*pos].0 != Token::RParen {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::UnmatchedOpenParen,
-                        line: tok_line,
-                    });
-                }
-                *pos += 1;
-                Ok(input_ty)
-            }
-        }
-        Token::LAngle => {
-            *pos += 1;
-            let mut params: Vec<(String, TypeExpr)> = Vec::new();
-            loop {
-                if *pos >= tokens.len() {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::InvalidTypeExpr,
-                        line: tok_line,
-                    });
-                }
-                if tokens[*pos].0 == Token::RAngle {
-                    *pos += 1;
-                    break;
-                }
-                let param_name = match tokens[*pos].0.clone() {
-                    Token::Symbol(s) => s,
-                    _ => {
-                        return Err(ParseError {
-                            kind: ParseErrorKind::InvalidTypeExpr,
-                            line: tokens[*pos].1,
-                        });
-                    }
-                };
-                *pos += 1;
-                let constraint = parse_type_expr(tokens, pos)?;
-                params.push((param_name, constraint));
-                if *pos < tokens.len() && tokens[*pos].0 == Token::Comma {
-                    *pos += 1;
-                }
-            }
-            let body = parse_type_expr(tokens, pos)?;
-            Ok(TypeExpr::Generic(params, Box::new(body)))
-        }
-        Token::Star => {
-            *pos += 1;
-            let inner = parse_type_expr(tokens, pos)?;
-            Ok(TypeExpr::Nominal(Box::new(inner)))
-        }
-        _ => Err(ParseError {
-            kind: ParseErrorKind::InvalidTypeExpr,
-            line: tok_line,
-        }),
-    }
+pub(crate) fn type_parser() -> impl Parser<Token, TypeExpr, Error = ParseError> + Clone {
+    recursive(|ty| {
+        let named = select! {
+            Token::Symbol(s) if s == "_" => TypeExpr::Wildcard,
+            Token::Symbol(s) => TypeExpr::Named(s),
+        };
+
+        let array = ty
+            .clone()
+            .delimited_by(
+                just(Token::LBracket),
+                just(Token::RBracket).labelled(ParseErrorKind::UnmatchedOpenBracket),
+            )
+            .map(|inner| TypeExpr::Array(Box::new(inner)));
+
+        let map_entry = select! { Token::Symbol(s) => s }
+            .then_ignore(just(Token::Colon).labelled(ParseErrorKind::InvalidMapEntry))
+            .then(ty.clone());
+
+        let map = map_entry
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .delimited_by(
+                just(Token::LBrace),
+                just(Token::RBrace).labelled(ParseErrorKind::UnmatchedOpenBrace),
+            )
+            .map(TypeExpr::Map);
+
+        let func_or_paren = ty
+            .clone()
+            .then(just(Token::Pipe).ignore_then(ty.clone()).or_not())
+            .delimited_by(
+                just(Token::LParen),
+                just(Token::RParen).labelled(ParseErrorKind::UnmatchedOpenParen),
+            )
+            .map(|(inp, out)| match out {
+                Some(o) => TypeExpr::Function(Box::new(inp), Box::new(o)),
+                None => inp,
+            });
+
+        let generic_param = select! { Token::Symbol(s) => s }.then(ty.clone());
+
+        let generic = generic_param
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .delimited_by(
+                just(Token::LAngle),
+                just(Token::RAngle).labelled(ParseErrorKind::InvalidTypeExpr),
+            )
+            .then(ty.clone())
+            .map(|(params, body)| TypeExpr::Generic(params, Box::new(body)));
+
+        let nominal = just(Token::Star)
+            .ignore_then(ty.clone())
+            .map(|inner| TypeExpr::Nominal(Box::new(inner)));
+
+        choice((generic, array, func_or_paren, map, nominal, named))
+    })
 }
 
 #[cfg(test)]

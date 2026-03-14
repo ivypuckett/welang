@@ -26,7 +26,7 @@ pub enum Expr {
     Rename(String, Box<Expr>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ParseErrorKind {
     Lex(LexError),
     UnmatchedOpenParen,
@@ -105,7 +105,7 @@ impl std::fmt::Display for ParseErrorKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ParseError {
     pub kind: ParseErrorKind,
     pub line: usize,
@@ -123,5 +123,42 @@ impl From<LexError> for ParseError {
             line: e.line,
             kind: ParseErrorKind::Lex(e),
         }
+    }
+}
+
+impl chumsky::Error<crate::lisp::lexer::Token> for ParseError {
+    type Span = std::ops::Range<usize>;
+    type Label = ParseErrorKind;
+
+    fn expected_input_found<Iter: IntoIterator<Item = Option<crate::lisp::lexer::Token>>>(
+        span: Self::Span,
+        _expected: Iter,
+        found: Option<crate::lisp::lexer::Token>,
+    ) -> Self {
+        use crate::lisp::lexer::Token;
+        let kind = match found {
+            None => ParseErrorKind::InvalidFuncDef,
+            Some(Token::RParen) => ParseErrorKind::UnexpectedCloseParen,
+            Some(Token::RBracket) => ParseErrorKind::UnexpectedCloseBracket,
+            Some(Token::RBrace) => ParseErrorKind::UnexpectedCloseBrace,
+            Some(Token::Pipe) => ParseErrorKind::UnexpectedPipe,
+            Some(Token::Dot) => ParseErrorKind::UnexpectedDot,
+            _ => ParseErrorKind::UnexpectedTopLevel,
+        };
+        ParseError {
+            kind,
+            line: span.start,
+        }
+    }
+
+    fn with_label(self, label: Self::Label) -> Self {
+        ParseError {
+            kind: label,
+            ..self
+        }
+    }
+
+    fn merge(self, _other: Self) -> Self {
+        self
     }
 }
