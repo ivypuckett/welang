@@ -3,37 +3,45 @@
     "given": [
       {
         "pattern": "the welang program {string}",
-        "description": "Load a welang source file from the tests/ directory by filename"
+        "description": "Load a .we source file from tests/ by filename; used with 'When I compile and run it'"
+      },
+      {
+        "pattern": "the welang expression {string}",
+        "description": "Store an inline welang expression; used with 'Then it should evaluate to {int}'"
+      },
+      {
+        "pattern": "the welang definitions:",
+        "description": "Store multiline welang function definitions from a docstring block; used with evaluate/call Then steps"
       }
     ],
     "when": [
       {
         "pattern": "I compile and run it",
-        "description": "Compile the loaded program with the `we` CLI and execute the resulting binary"
+        "description": "Compile the program loaded via 'Given the welang program' and run the binary"
       }
     ],
     "then": [
       {
         "pattern": "it should exit successfully",
-        "description": "Assert the program exited with code 0"
+        "description": "Assert the program from 'When I compile and run it' exited with code 0"
+      },
+      {
+        "pattern": "it should evaluate to {int}",
+        "description": "Compile definitions + main: {(equal [expr, N]): 0, _: 1} and assert exit 0; requires a prior 'Given the welang expression' step"
+      },
+      {
+        "pattern": "calling {string} with {int} should return {int}",
+        "description": "Compile definitions + main: {(equal [(func input), expected]): 0, _: 1} and assert exit 0; uses definitions from 'Given the welang definitions:'"
+      },
+      {
+        "pattern": "it should compile successfully",
+        "description": "Compile definitions + main: 0 and assert compilation succeeds; uses definitions from 'Given the welang definitions:'"
       }
     ]
   },
-  "feature_files": {
-    "arithmetic.feature": ["arithmetic.we", "comparisons.we", "floats.we"],
-    "basics.feature": ["hello.we"],
-    "control-flow.feature": ["conditionals.we", "if-no-else.we"],
-    "functions.feature": ["globals.we", "rename.we", "recursion.we"],
-    "maps.feature": ["map.we", "heterogeneous-map.we", "dot-operators.we"],
-    "pipes.feature": ["pipe.we", "pipe-order.we"],
-    "strings.feature": ["print.we", "string-print.we", "multiple-strings.we", "booleans.we"],
-    "types.feature": ["structural-types.we", "nominal-types.we", "generics.we", "generic-specialization.we"],
-    "fibonacci.feature": ["fib-zero.we", "fib-one.we", "fib-recursive.we"],
-    "pipe-correctness.feature": ["pipe-apply.we", "pipe-left-assoc.we", "pipe-expr-left.we"],
-    "range-comparisons.feature": ["leq-less.we", "leq-equal.we", "geq-greater.we", "geq-equal.we"],
-    "conditional-functions.feature": ["positive-only.we", "positive-only-pass.we", "abs-named.we"],
-    "generic-runtime.feature": ["int-id.we", "pair-of-same.we", "multi-generic-runtime.we", "nested-generic-runtime.we"],
-    "nominal-runtime.feature": ["nominal-nonzero.we", "nominal-named-annotation.we", "nominal-generic-runtime.we", "structural-over-nominal.we", "nominal-over-nominal.we"],
-    "structural-runtime.feature": ["structural-float.we", "structural-bool.we", "structural-array.we", "structural-function.we", "inline-annotation.we", "named-type-annotation.we", "structural-identity-value.we"]
-  }
+  "notes": [
+    "'Given the welang expression' and 'Given the welang definitions:' can be combined in the same scenario.",
+    "When adding a new step definition to cucumber_tests.rs, add it here too.",
+    "The {int} parameter in cucumber expressions parses signed integers (e.g. -9 is valid)."
+  ]
 }

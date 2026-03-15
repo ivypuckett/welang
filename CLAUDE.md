@@ -60,9 +60,9 @@ Do not leave files over 400 lines — split or refactor before committing.
 
 When adding new cucumber scenarios or step definitions:
 
-1. Check `tests/features/available_features.json` for the complete list of existing Given/When/Then steps.
-2. Use only steps already listed there, or add new step definitions to `tests/cucumber_tests.rs` **and** update `available_features.json` to record them.
-3. Add the new `.we` filename(s) to the appropriate entry in `available_features.json` under `feature_files`.
+1. Check `tests/features/available_features.json` for the complete list of existing Given/When/Then steps and their intended use.
+2. Use only steps already listed there, or add new step definitions to `tests/cucumber_tests.rs` **and** add the new entry to `available_features.json`.
+3. Prefer inline expression/definition steps over adding new `.we` files when the scenario can be expressed that way.
 
 ## Before pushing
 
