@@ -1,0 +1,39 @@
+{
+  "steps": {
+    "given": [
+      {
+        "pattern": "the welang program {string}",
+        "description": "Load a welang source file from the tests/ directory by filename"
+      }
+    ],
+    "when": [
+      {
+        "pattern": "I compile and run it",
+        "description": "Compile the loaded program with the `we` CLI and execute the resulting binary"
+      }
+    ],
+    "then": [
+      {
+        "pattern": "it should exit successfully",
+        "description": "Assert the program exited with code 0"
+      }
+    ]
+  },
+  "feature_files": {
+    "arithmetic.feature": ["arithmetic.we", "comparisons.we", "floats.we"],
+    "basics.feature": ["hello.we"],
+    "control-flow.feature": ["conditionals.we", "if-no-else.we"],
+    "functions.feature": ["globals.we", "rename.we", "recursion.we"],
+    "maps.feature": ["map.we", "heterogeneous-map.we", "dot-operators.we"],
+    "pipes.feature": ["pipe.we", "pipe-order.we"],
+    "strings.feature": ["print.we", "string-print.we", "multiple-strings.we", "booleans.we"],
+    "types.feature": ["structural-types.we", "nominal-types.we", "generics.we", "generic-specialization.we"],
+    "fibonacci.feature": ["fib-zero.we", "fib-one.we", "fib-recursive.we"],
+    "pipe-correctness.feature": ["pipe-apply.we", "pipe-left-assoc.we", "pipe-expr-left.we"],
+    "range-comparisons.feature": ["leq-less.we", "leq-equal.we", "geq-greater.we", "geq-equal.we"],
+    "conditional-functions.feature": ["positive-only.we", "positive-only-pass.we", "abs-named.we"],
+    "generic-runtime.feature": ["int-id.we", "pair-of-same.we", "multi-generic-runtime.we", "nested-generic-runtime.we"],
+    "nominal-runtime.feature": ["nominal-nonzero.we", "nominal-named-annotation.we", "nominal-generic-runtime.we", "structural-over-nominal.we", "nominal-over-nominal.we"],
+    "structural-runtime.feature": ["structural-float.we", "structural-bool.we", "structural-array.we", "structural-function.we", "inline-annotation.we", "named-type-annotation.we", "structural-identity-value.we"]
+  }
+}

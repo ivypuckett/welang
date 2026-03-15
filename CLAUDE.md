@@ -56,6 +56,14 @@ Keep files under **400 lines total** (roughly 200 lines of code and 200 lines of
 
 Do not leave files over 400 lines — split or refactor before committing.
 
+## Writing new tests
+
+When adding new cucumber scenarios or step definitions:
+
+1. Check `tests/features/available_features.json` for the complete list of existing Given/When/Then steps.
+2. Use only steps already listed there, or add new step definitions to `tests/cucumber_tests.rs` **and** update `available_features.json` to record them.
+3. Add the new `.we` filename(s) to the appropriate entry in `available_features.json` under `feature_files`.
+
 ## Before pushing
 
 Always run these and fix any issues before committing/pushing:
