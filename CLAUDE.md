@@ -65,18 +65,8 @@ cargo fmt                  # Format code
 cargo clippy -- -D warnings  # Lint (all warnings are errors)
 ```
 
-Also compile and run every file in `tests/` to make sure none of them regress:
+Also run the cucumber integration tests to make sure no `.we` programs regress:
 
 ```sh
-cargo build
-for f in tests/*.we; do
-  echo "Compiling $f ..."
-  ./target/debug/we "$f"
-  stem="${f%.we}"; stem="${stem##*/}"
-  echo "Running $stem ..."
-  if ! ./"$stem"; then
-    echo "FAILED: $stem exited with non-zero status"
-    exit 1
-  fi
-done
+cargo test --test cucumber_tests
 ```

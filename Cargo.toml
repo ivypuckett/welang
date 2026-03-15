@@ -12,3 +12,12 @@ cranelift-module = "0.109"
 cranelift-object = "0.109"
 polytype = "7.0.1"
 target-lexicon = "0.12"
+
+[dev-dependencies]
+cucumber = "0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+
+[[test]]
+name = "cucumber_tests"
+harness = false
