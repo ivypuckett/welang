@@ -1,0 +1,47 @@
+{
+  "steps": {
+    "given": [
+      {
+        "pattern": "the welang program {string}",
+        "description": "Load a .we source file from tests/ by filename; used with 'When I compile and run it'"
+      },
+      {
+        "pattern": "the welang expression {string}",
+        "description": "Store an inline welang expression; used with 'Then it should evaluate to {int}'"
+      },
+      {
+        "pattern": "the welang definitions:",
+        "description": "Store multiline welang function definitions from a docstring block; used with evaluate/call Then steps"
+      }
+    ],
+    "when": [
+      {
+        "pattern": "I compile and run it",
+        "description": "Compile the program loaded via 'Given the welang program' and run the binary"
+      }
+    ],
+    "then": [
+      {
+        "pattern": "it should exit successfully",
+        "description": "Assert the program from 'When I compile and run it' exited with code 0"
+      },
+      {
+        "pattern": "it should evaluate to {int}",
+        "description": "Compile definitions + main: {(equal [expr, N]): 0, _: 1} and assert exit 0; requires a prior 'Given the welang expression' step"
+      },
+      {
+        "pattern": "calling {string} with {int} should return {int}",
+        "description": "Compile definitions + main: {(equal [(func input), expected]): 0, _: 1} and assert exit 0; uses definitions from 'Given the welang definitions:'"
+      },
+      {
+        "pattern": "it should compile successfully",
+        "description": "Compile definitions + main: 0 and assert compilation succeeds; uses definitions from 'Given the welang definitions:'"
+      }
+    ]
+  },
+  "notes": [
+    "'Given the welang expression' and 'Given the welang definitions:' can be combined in the same scenario.",
+    "When adding a new step definition to cucumber_tests.rs, add it here too.",
+    "The {int} parameter in cucumber expressions parses signed integers (e.g. -9 is valid)."
+  ]
+}
