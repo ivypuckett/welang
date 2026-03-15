@@ -65,7 +65,7 @@ async fn given_expression(world: &mut WelangWorld, expr: String) {
 /// Store multiline welang function definitions (docstring) used by evaluate/call steps.
 #[given("the welang definitions:")]
 async fn given_definitions(world: &mut WelangWorld, step: &Step) {
-    world.definitions = step.docstring().unwrap_or("").to_string();
+    world.definitions = step.docstring().map_or("", |v| v).to_string();
 }
 
 // ── When ─────────────────────────────────────────────────────────────────────
