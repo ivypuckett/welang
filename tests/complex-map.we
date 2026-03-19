@@ -1,0 +1,15 @@
+# Tests that map literals with 3+ fields can be constructed (values depending on
+# the function input) and each field returned individually via (get [...]).
+#
+# Note: when array values are implemented, a companion test with an array of
+# at least length 3 should be added here.
+getA: (get [{a: x, b: (add [x, 1]), c: (add [x, 2])}, a])
+getB: (get [{a: x, b: (add [x, 1]), c: (add [x, 2])}, b])
+getC: (get [{a: x, b: (add [x, 1]), c: (add [x, 2])}, c])
+
+main:
+  {((getA 10).equals 10):
+    {((getB 10).equals 11):
+      {((getC 10).equals 12): 0, _: 1},
+    _: 1},
+  _: 1}
